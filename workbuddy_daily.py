@@ -63,6 +63,10 @@
                              多个用逗号/分号分隔，如 UID_aaa,UID_bbb）
    SERVERCHAN_SENDKEY        【可选】Server酱 微信推送（免费每天 5 条）：https://sct.ftqq.com
                              sctp 开头的是「方糖」专属通道，脚本会自动走对应域名
+   WORKBUDDY_NOTIFY          【可选】推送策略，默认 fail（仅失败推，省额度）
+                              fail / 未设 → 仅签到失败时推
+                              always     → 每次都推（调试用）
+                              0          → 完全关闭
    WECOM_WEBHOOK             【可选】企业微信群机器人（完整 URL 或仅 key）
    DINGTALK_WEBHOOK          【可选】钉钉群机器人 webhook（安全设置：自定义关键词或加签）
    DINGTALK_SECRET           【可选】钉钉加签密钥（机器人选「加签」时必填）
@@ -480,10 +484,40 @@ INFO_BACKUP = os.path.join(os.path.expanduser("~"), "AppData", "Local", "CodeBud
 # ---------- 账号 ----------
 # ---------- Token 自动续期（内联实现，无需外部文件） ----------
 REFRESH_URL = "https://copilot.tencent.com/v2/plugin/auth/token/refresh"
-REFRESH_STORE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wb_refresh_tokens.json")
-TOKEN_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "WORKBUDDY_ACCESS_TOKEN.txt")
-BENEFIT_STATE_FILE = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "workbuddy_benefit_state.json")
+def _resolve_state_dir():
+    """状态文件目录。
+
+    优先 `WORKBUDDY_STATE_DIR`，其次脚本上级的 `data/`（呆呆里是
+    /app/Dumb-Panel/data/，在数据卷内），最后退回脚本目录（青龙单文件部署）。
+
+    这样与 qoder / trae 两个脚本的行为一致：状态统一落在 data/ 下，
+    重装或更新脚本都不会碰到。
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    for cand in (
+        os.environ.get("WORKBUDDY_STATE_DIR", "").strip(),
+        os.path.join(os.path.dirname(here), "data"),
+        here,
+    ):
+        if not cand:
+            continue
+        try:
+            os.makedirs(cand, exist_ok=True)
+            probe = os.path.join(cand, ".w")
+            with open(probe, "w") as fh:
+                fh.write("")
+            os.remove(probe)
+            return cand
+        except Exception:
+            continue
+    return here
+
+
+_STATE_DIR = _resolve_state_dir()
+
+REFRESH_STORE = os.path.join(_STATE_DIR, "wb_refresh_tokens.json")
+TOKEN_FILE = os.path.join(_STATE_DIR, "WORKBUDDY_ACCESS_TOKEN.txt")
+BENEFIT_STATE_FILE = os.path.join(_STATE_DIR, "workbuddy_benefit_state.json")
 
 
 
@@ -1532,7 +1566,7 @@ def t_daily_activity(s, uid, nick, log):
     只认 `/v2/report` 的 `chat_request_send`。每天补发一条，幂等。
     """
     state_file = os.getenv("WORKBUDDY_ACTIVITY_STATE", "").strip() or os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "workbuddy_activity_state.json")
+        _STATE_DIR, "workbuddy_activity_state.json")
     today = beijing_today().isoformat()
     state = {}
     try:
@@ -1644,11 +1678,15 @@ def t_daily_activity(s, uid, nick, log):
         log("   🔥每日活跃: 已上报")
 
 
-def t_sign(s, uid, nick, log):
+def t_sign(s, uid, nick, log, status_out=None):
     """每日签到 + 签到活动读数（连签天数 / 累计积分 / 连签奖励日）
 
     先查活动状态，确认在活动期且今天未签才 POST。daily-checkin 对瞬时错误
     （网络/5xx）有界重试，但空 200、业务失败或没有 credit 的响应不再写成成功。
+
+    `status_out` 是调用方传入的 dict，用于回传签到结论，供进程退出码判定：
+      checked_in   True=今天确实已签（含幂等命中）；False=未签成功
+      reason       未签成功的原因（简短中文）
     """
     try:
         status_response = api_retry(
@@ -1677,6 +1715,8 @@ def t_sign(s, uid, nick, log):
         return
     if status_data.get("today_checked_in") in (True, 1):
         log("   ✅签到: 今天已签到%s" % _checkin_tail(s))
+        if status_out is not None:
+            status_out["checked_in"] = True
         t_daily_activity(s, uid, nick, log)
         return
 
@@ -1704,17 +1744,23 @@ def t_sign(s, uid, nick, log):
         log("   ✅签到成功 +%s积分%s%s" % (
             claim_data.get("credit"), _checkin_tail(s),
             "（状态稍后刷新）" if pending else ""))
+        if status_out is not None:
+            status_out["checked_in"] = True
         t_daily_activity(s, uid, nick, log)
         return
     if _api_code_ok(claim_code) and any(
             marker in message_lower for marker in ("已签到", "已领取", "already")):
         log("   ✅签到: %s%s" % (message, _checkin_tail(s)))
+        if status_out is not None:
+            status_out["checked_in"] = True
         t_daily_activity(s, uid, nick, log)
         return
     if claim_code in (10001, "10001"):
         fresh = _checkin_status(s)
         if fresh.get("today_checked_in") in (True, 1):
             log("   ✅签到: 状态回读确认今日已签%s" % _checkin_tail(s))
+            if status_out is not None:
+                status_out["checked_in"] = True
             t_daily_activity(s, uid, nick, log)
             return
         log("   ❌签到未确认: code 10001 但状态未显示今日已签 %s" % message[:60])
@@ -4295,7 +4341,14 @@ def run_account(idx, acc, do_desktop):
     # 前置：无 Buddy 实例时，其余任务 accept 会被服务端拒绝（prerequisite not met: first_buddy）
     t_first_buddy(s, uid, nick, log)
     t_accept_all(s, uid, nick, log)
-    _run("每日签到", ["checkin"], lambda: t_sign(s, uid, nick, log))
+    _checkin_state = {}
+    if want("checkin"):
+        _run("每日签到", ["checkin"], lambda: t_sign(s, uid, nick, log, _checkin_state))
+    else:
+        # 用户用 WORKBUDDY_TASKS / WORKBUDDY_SKIP_TASKS 显式排除了签到：
+        # 这是他自己的选择，不应被判为失败（否则每天都会误报退出码 1）。
+        log("   ⏭️ 每日签到: 按配置跳过（不在本次任务白名单内）")
+        _checkin_state["skipped"] = True
     _run("召唤3次专家团", ["Expert_team_use_3"], lambda: t_team_3(s, uid, nick, log))
     _run("发现应用/企鹅教师助手", ["Buddy_App", "Buddy_App_QQ"], lambda: t_buddy_apps(s, uid, nick, log))
     _run("和平精英主题", ["Hp_Appearance"], lambda: t_theme(s, uid, nick, log))
@@ -4351,6 +4404,9 @@ def run_account(idx, acc, do_desktop):
                                        verify=False)).get("data") or {})
     summary.update({"done": done, "total": len(st_all), "rest": rest,
                     "level": prof2.get("level", "?"), "energy": energy})
+    # 签到结论（供进程退出码判定；未执行/未确认一律 False）
+    summary["checked_in"] = bool(_checkin_state.get("checked_in"))
+    summary["checkin_skipped"] = bool(summary.get("enterprise") or _checkin_state.get("skipped"))
     log("🏁 %s: 完成%s/%s 等级%s 剩余: %s" % (mask_phone(acc.get("note", "")), done, len(st_all), prof2.get("level", "?"),
                                              ", ".join(rest) if rest else "无"))
     return msgs, summary
@@ -4743,11 +4799,39 @@ def main():
             all_msgs.extend(msgs_part)
             summaries.append(sm)
             time.sleep(2)
-    # 推送摘要（完整日志见青龙日志/控制台）
-    send_notify_all("🌱 WorkBuddy 签到报告", build_summary(summaries))
+    # ---- 退出码与推送 ----
+    # ⚠️ Server酱 免费版每天只有 5 条额度，所以**成功必须静默**。
+    # WORKBUDDY_NOTIFY 取值：fail（默认，仅失败推）/ always（调试用）/ 0（关闭）
+    if QUERY_ONLY:
+        return 0
+    failed_accounts = []
+    for sm in summaries:
+        if sm.get("checked_in"):
+            continue
+        # 企业版/无个人成长体系：上游本就不支持签到，不算失败
+        if sm.get("checkin_skipped") or sm.get("enterprise"):
+            continue
+        failed_accounts.append(sm.get("idx"))
+
+    notify_mode = (os.environ.get("WORKBUDDY_NOTIFY") or "fail").strip().lower()
+    if notify_mode != "0":
+        if failed_accounts:
+            print("")
+            print("❌ 签到未成功确认的账号: %s（详见上方各账号输出）"
+                  % "、".join("账号%d" % i for i in failed_accounts))
+            send_notify_all("❌ WorkBuddy 签到失败", build_summary(summaries))
+        elif notify_mode == "always":
+            send_notify_all("🌱 WorkBuddy 签到报告", build_summary(summaries))
+        else:
+            print("ℹ️ 签到正常，静默不推送（节省 Server酱 额度）")
+
+    if failed_accounts:
+        print("   退出码 1 —— 调度器会据此判定本次任务失败并告警")
+        return 1
+    return 0
 
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

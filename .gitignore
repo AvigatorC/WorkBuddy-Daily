@@ -7,3 +7,4 @@ workbuddy_activity_state.json
 *.bundle
 __pycache__/
 *.py[cod]
+.verify/
