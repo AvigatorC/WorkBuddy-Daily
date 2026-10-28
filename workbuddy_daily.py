@@ -78,6 +78,8 @@
    WORKBUDDY_MAKEUP_MAX_PER_RUN
                              【可选】每轮最多补签几张（默认 1，最多 10）
    WORKBUDDY_BENEFIT_STATE   【可选】补偿/礼包本地期次防重文件路径
+   WORKBUDDY_THEME_RESTORE   【可选】和平精英主题任务完成后切回的内置外观
+                              dark（默认，深色）/ light（浅色）/ 0（不切回）
    WORKBUDDY_ACTIVITY_CHAT_FALLBACK
                              【可选】热力图未计分时是否补一次真实对话（默认 1）
 
@@ -1923,8 +1925,36 @@ def _fetch_hp_theme(s):
     return THEME_KEY, {"name": "和平精英激战金秋", "vipLevel": "free", "series": "craft"}
 
 
+def _restore_theme(s, log, resource_key=None):
+    """把外观切回内置默认（dark / light）。
+
+    `resource_key` 取内置键：`dark` 深色、`light` 浅色——它们不在
+    appearance/resources 皮肤目录里，是客户端内置外观，直接 set 即可
+    （服务端对非法键返回 17441，对 dark/light 返回 code 0）。
+
+    默认取环境变量 WORKBUDDY_THEME_RESTORE（默认 dark，设 0/off/不还原则跳过）。
+    """
+    want = resource_key if resource_key is not None else os.getenv("WORKBUDDY_THEME_RESTORE", "dark")
+    want = (want or "").strip().lower()
+    if want in ("", "0", "off", "no", "false", "none"):
+        return
+    try:
+        r = s.post(BASE + "/portal/user-asset/appearance/set",
+                   json={"kind": "theme", "resource_key": want},
+                   timeout=20, verify=False)
+        ok = r.json().get("code") == 0
+        log("   外观恢复: %s（%s）" % ("深色" if want == "dark" else ("浅色" if want == "light" else want),
+                                    "OK" if ok else "失败 code=%s" % r.json().get("code")))
+    except Exception as exc:
+        log("   外观恢复: 失败 %s" % str(exc)[:60])
+
+
 def t_theme(s, uid, nick, log):
-    """和平精英主题（Hp_Appearance）：主题目录取真 resource_key + meta，set 后补 skin_apply 事件"""
+    """和平精英主题（Hp_Appearance）：主题目录取真 resource_key + meta，set 后补 skin_apply 事件。
+
+    任务点亮后把外观切回内置深色（WORKBUDDY_THEME_RESTORE，默认 dark），
+    避免脚本每天把客户端皮肤换走、用户还要手动改回来。
+    """
     st, cur, tgt = prog(s, "Hp_Appearance")
     if st is None:
         log("   和平精英主题: 不在任务列表，跳过")
@@ -1943,6 +1973,9 @@ def t_theme(s, uid, nick, log):
                                "type": "personal"}])
         time.sleep(6)
     log("   和平精英主题: %s" % prog(s, "Hp_Appearance")[0])
+    # 任务已点亮 → 皮肤使命完成，切回用户偏好的内置外观
+    if prog(s, "Hp_Appearance")[0] in ("completed", "claimed"):
+        _restore_theme(s, log)
 
 
 def t_library(s, uid, nick, log):
