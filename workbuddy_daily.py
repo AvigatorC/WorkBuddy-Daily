@@ -1046,6 +1046,17 @@ def prog(s, code):
     return None, None, None
 
 
+def _needs_do(s, code):
+    """任务是否真的还需要做：只有「明确存在于列表且未完成」才返回 True。
+
+    关键点：`prog()` 读不到任务时返回 st=None。若把它当成「未完成」继续执行，
+    轻则白发一轮上报，重则真发对话、真扣积分（实测 Model_chat_GLM5.2 已下架，
+    每次仍跑一次 GLM-5.2 对话）。所以 None 一律视为「不要做」。
+    """
+    st, cur, tgt = prog(s, code)
+    return st is not None and st not in ("completed", "claimed")
+
+
 def _growth_task_rows(s, headers=None, path="/v2/activity/growth/tasks"):
     """读取一份成长任务原始行；单源失败返回空列表。"""
     try:
@@ -1884,9 +1895,16 @@ def t_team_3(s, uid, nick, log):
 
 
 def t_buddy_apps(s, uid, nick, log):
-    """发现应用/企鹅教师助手：desktop_buddy5_sequence + report_desktop_events"""
+    """发现应用/企鹅教师助手：desktop_buddy5_sequence + report_desktop_events
+
+    ⚠️ st=None 表示任务不在当前列表（已下架）。此时上报没有任何意义，
+    只是白发一轮桌面事件，必须跳过。
+    """
     for task in ("Buddy_App", "Buddy_App_QQ"):
         st, cur, tgt = prog(s, task)
+        if st is None:
+            log("   %s: 不在当前任务列表（已下架/改名），跳过" % task)
+            continue
         if st in ("completed", "claimed"):
             continue
         buddy_id = QQ_TPL if "QQ" in task else "buddy-app-default"
@@ -1960,7 +1978,16 @@ def t_library(s, uid, nick, log):
 
 
 def t_chat_n(s, uid, nick, log, code, n, prompts):
-    """通用聊天任务: chat_5 / Model_chat_GLM5.2"""
+    """通用聊天任务: chat_5 / Model_chat_GLM5.2
+
+    ⚠️ 上游会随时下架任务。`prog()` 读不到时返回 st=None，若此时仍发对话，
+    会真实调用模型、真实扣积分，而任务根本不存在（实测 Model_chat_GLM5.2
+    已下架，每次白跑 1 次对话）。因此 None 必须直接跳过。
+    """
+    st, cur, tgt = prog(s, code)
+    if st is None:
+        log("   %s: 不在当前任务列表（已下架/改名），跳过，不发对话" % code)
+        return
     for i in range(n):
         st, cur, tgt = prog(s, code)
         if st in ("completed", "claimed") or (cur or 0) >= (tgt or n):
@@ -1976,6 +2003,10 @@ def t_chat_n(s, uid, nick, log, code, n, prompts):
 
 def t_black_cat(s, uid, nick, log):
     st, cur, tgt = prog(s, "black_cat")
+    if st is None:
+        # 任务已下架：夜猫子要真发对话，不能对着不存在的任务烧积分
+        log("   夜猫子: 不在当前任务列表（已下架/改名），跳过")
+        return
     if st in ("completed", "claimed"):
         log("   夜猫子: 已 %s %s/%s" % (st, cur, tgt))
         return
@@ -2096,7 +2127,9 @@ def t_canvas_automation(s, uid, nick, log):
     为 wbx_design_canvas_task_create(+open) 与 playbook_cta_click/playbook_prompt_send 挂在真实
     conversationId/requestId 上；未点亮时回落旧的 web 域裸事件。自动化任务用真实 rrule 对象形状。
     """
-    if prog(s, "create_canvas")[0] not in ("completed", "claimed"):
+    # ⚠️ 只有明确「未完成」才执行：prog() 返回 None 表示任务不在列表（已下架），
+    # 此时若继续 _desktop_run 会真发对话、真烧积分。统一用 _needs_do() 判断。
+    if _needs_do(s, "create_canvas"):
         def _canvas_evs(cid, mid):
             return [{"eventCode": "wbx_design_canvas_task_create", "conversationId": cid, "requestId": mid,
                      "source": "summon_keyword", "isCustomModel": False, "name": "", "inputLength": 12,
@@ -2105,13 +2138,13 @@ def t_canvas_automation(s, uid, nick, log):
                      "id": "ardot-file-" + mid[-8:], "source": "summon_keyword", "type": "page",
                      "cost": 13000, "isSuccessful": True}]
         if not _desktop_run(s, uid, nick, "canvas", "帮我在设计创意画布里做一张活动海报", _canvas_evs) \
-                or prog(s, "create_canvas")[0] not in ("completed", "claimed"):
+                or _needs_do(s, "create_canvas"):
             report(s, uid, nick, [{"eventCode": "agent_task_created", "source": "CLOUD", "name": "", "mode": "craft",
                                    "requestModelId": "default", "task_mode": "design"},
                                   {"eventCode": "wbx_design_canvas_task_create"}])
             time.sleep(3)
     st, cur, tgt = prog(s, "automation_1")
-    if st not in ("completed", "claimed"):
+    if st is not None and st not in ("completed", "claimed"):
         report(s, uid, nick, [{"eventCode": "agent_task_created", "source": "CLOUD", "name": "", "mode": "craft",
                                "requestModelId": "default", "task_mode": "automation",
                                "isAutomationBackground": True},
@@ -2127,7 +2160,7 @@ def t_canvas_automation(s, uid, nick, log):
                                "prompt": "每周五自动整理本周工作，生成一份周报。"},
                               {"eventCode": "automated_task_execute", "action": "execute"}])
         time.sleep(3)
-    if prog(s, "playbook_prompt")[0] not in ("completed", "claimed"):
+    if _needs_do(s, "playbook_prompt"):
         def _pb_evs(cid, mid):
             payload = {"id": PLAYBOOK_CASE["id"], "name": PLAYBOOK_CASE["name"],
                        "type": PLAYBOOK_CASE["type"], "categoryId": "", "categoryName": ""}
@@ -2143,7 +2176,7 @@ def t_canvas_automation(s, uid, nick, log):
                                             "ext1": "discover"})
             return [ev1, ev2, ev3]
         if not _desktop_run(s, uid, nick, "playbook", "用这个案例帮我做一个同款", _pb_evs) \
-                or prog(s, "playbook_prompt")[0] not in ("completed", "claimed"):
+                or _needs_do(s, "playbook_prompt"):
             report(s, uid, nick, [{"eventCode": "playbook_prompt_send", "ext1": str(uuid.uuid4()),
                                    "requestId": str(uuid.uuid4()), "id": PLAYBOOK_CASE["id"],
                                    "name": PLAYBOOK_CASE["name"],
@@ -4292,8 +4325,8 @@ def run_account(idx, acc, do_desktop):
     except Exception as e:
         log("   ⚠️领奖预扫异常: %s" % str(e)[:80])
     # 桌面任务先做（新账号必须先有真实桌面会话，否则接受会被回滚、遥测不计数）
-    need_rich = prog(s, "RichMeow_Chat")[0] not in ("completed", "claimed")
-    need_skill = prog(s, "skill_1")[0] not in ("completed", "claimed")
+    need_rich = _needs_do(s, "RichMeow_Chat")
+    need_skill = _needs_do(s, "skill_1")
     desktop_skipped = False
     if (need_rich or need_skill) and not want("desktop", "RichMeow_Chat", "skill_1"):
         log("  🖥️ 桌面任务: 按配置跳过（desktop）")
