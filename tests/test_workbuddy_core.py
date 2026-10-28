@@ -1295,5 +1295,99 @@ class CoreBehaviorTests(unittest.TestCase):
                 self.fail("未找到状态常量 %s" % name)
 
 
+    def test_notify_policy_always_is_default(self):
+        """不设 WORKBUDDY_NOTIFY 时必须每次推送，保持原行为。"""
+        sent = []
+        module = load_functions(
+            "_notify_or_skip", "_notify_ok",
+            os=os, print=lambda *a, **k: None,
+            send_notify_all=lambda t, c: sent.append(t),
+            build_summary=lambda s: "summary",
+        )
+        previous = os.environ.pop("WORKBUDDY_NOTIFY", None)
+        try:
+            module["_notify_or_skip"]([{"idx": 1, "checked_in": True}])
+            self.assertEqual(1, len(sent))
+            module["_notify_or_skip"]([{"idx": 1, "checked_in": False}])
+            self.assertEqual(2, len(sent))
+        finally:
+            os.environ.pop("WORKBUDDY_NOTIFY", None)
+            if previous is not None:
+                os.environ["WORKBUDDY_NOTIFY"] = previous
+
+    def test_notify_policy_fail_only_pushes_on_trouble(self):
+        """fail 策略：全部签到成功则不推；任一账号未确认或异常中断则推。"""
+        sent = []
+        module = load_functions(
+            "_notify_or_skip", "_notify_ok",
+            os=os, print=lambda *a, **k: None,
+            send_notify_all=lambda t, c: sent.append(t),
+            build_summary=lambda s: "summary",
+        )
+        try:
+            os.environ["WORKBUDDY_NOTIFY"] = "fail"
+            # 全部成功 -> 静默
+            module["_notify_or_skip"]([{"idx": 1, "checked_in": True},
+                                       {"idx": 2, "checked_in": True}])
+            self.assertEqual([], sent)
+            # 有账号签到未确认 -> 推
+            module["_notify_or_skip"]([{"idx": 1, "checked_in": True},
+                                       {"idx": 2, "checked_in": False}])
+            self.assertEqual(1, len(sent))
+            # 账号异常中断（summary 无 checked_in 字段）-> 也要推
+            module["_notify_or_skip"]([{"idx": 1, "checked_in": True},
+                                       {"idx": 2, "done": 0, "rest": ["异常中断"]}])
+            self.assertEqual(2, len(sent))
+        finally:
+            os.environ.pop("WORKBUDDY_NOTIFY", None)
+
+    def test_notify_policy_zero_disables_push(self):
+        """WORKBUDDY_NOTIFY=0 时完全不推，即使有异常。"""
+        sent = []
+        module = load_functions(
+            "_notify_or_skip", "_notify_ok",
+            os=os, print=lambda *a, **k: None,
+            send_notify_all=lambda t, c: sent.append(t),
+            build_summary=lambda s: "summary",
+        )
+        try:
+            for value in ("0", "off", "none", "false"):
+                os.environ["WORKBUDDY_NOTIFY"] = value
+                module["_notify_or_skip"]([{"idx": 1, "checked_in": False}])
+            self.assertEqual([], sent)
+        finally:
+            os.environ.pop("WORKBUDDY_NOTIFY", None)
+
+    def test_sign_reports_checked_in_through_status_out(self):
+        """t_sign 的成功分支必须回传 checked_in，供推送策略判断。"""
+        class Response:
+            status_code = 200
+
+            def __init__(self, payload):
+                self.payload = payload
+
+            def json(self):
+                return self.payload
+
+        class Session:
+            def post(self, url, **kwargs):
+                return Response({"code": 0, "data": {"today_checked_in": True}})
+
+        module = load_functions(
+            "t_sign",
+            BASE="https://example.test",
+            api_retry=lambda s, method, url, **kw: s.post(url),
+            is_enterprise_denial=lambda code, payload: False,
+            _api_code_ok=lambda code: True,
+            _checkin_tail=lambda s: "",
+            t_daily_activity=lambda *a: None,
+            _checkin_status=lambda s: {"today_checked_in": True},
+        )
+        state = {}
+        with contextlib.redirect_stdout(io.StringIO()):
+            module["t_sign"](Session(), "uid", "nick", lambda m: None, state)
+        self.assertTrue(state.get("checked_in"))
+
+
 if __name__ == "__main__":
     unittest.main()
