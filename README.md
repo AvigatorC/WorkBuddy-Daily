@@ -484,6 +484,8 @@ python daily_forward.py daily.log --wx
 - **🔄 API 重试**：网络错误 / 5xx 自动指数退避重试 3 次；`--gap` 可调写动作间隔防频控。
 - **🎛️ 子任务开关**：`WORKBUDDY_TASKS`（白名单）/ `WORKBUDDY_SKIP_TASKS`（黑名单）可自由裁剪要执行的子任务（含玩法），被跳过的任务不会被完成也不会被领奖——适合把积分分摊到后面几个月领。
 - **🔗 稳定设备指纹**：每账号稳定派生 machineId/sessionId/qimei36；国内桌面 UA、版本、commit、releaseDate、CPU/内存与 5.8.3 真机口径对齐。
+- **🔄 续期头对齐**：CN refresh 带当前 AT 的 `Authorization: Bearer ...`、`X-Request-ID`、`X-User-Id`、`X-Domain`；AT/uid 缺失时保持旧的纯 RT 刷新形态，不伪造身份。
+- **💰 积分明细口径**：`credits_report.py` 的 `get-user-resource` 带分页 / 产品码 / 状态 / 到期时间窗，按 `CycleCapacityRemain[Precise]` 与 `CapacityType=4` 区分月度资源；旧 `CapacityRemain` 回包仍可读。
 - **📡 多域上报**：桌面域 + Web 域 + 小程序域三通道事件上报，完整覆盖所有任务类型。
 - **🧹 网页会话收尾**：真实对话成功即 `stop`、失败再 `delete`，避免占满上游 10 条活跃会话；命中 10105 时自动清理同任务前缀的旧会话后重试。
 - **📋 进度感知**：只上报缺口数量的事件，不重复提交已完成的进度。
@@ -597,13 +599,20 @@ WorkBuddy-Daily/
 available for personal users」（2026-10-07 实测口径）。脚本会**自动识别并跳过**签到与全部
 成长/互动任务，只做令牌续期与查询，不再把这种情况误报成「凭据失效」。
 
-> 企业额度不在个人「资源包」体系内（`get-user-resource*` 对企业号返回空 `Accounts`），请在企业后台查询。
+> 企业额度不在个人「资源包」体系内（`get-user-resource*` 对企业号返回空 `Accounts`），主脚本不查询企业额度。
+>
+> `credits_report.py` 只在 store 条目显式带 `enterpriseId` 时查询
+> `/v2/billing/meter/get-enterprise-user-usage`（404 回退网页无 `/v2` 路径），
+> `limit_num/limitNum = -1` 显示为不限量；企业账号不执行每日签到。
+> 主脚本归一后的账号结构不携带 `enterpriseId`，因此不做 JWT / `token_source`
+> 猜测式企业识别。
 
 ---
 
 ## 📦 版本与发布
 
 - **每次更新单独发一个 Release**：编号 `v1` → `v2` → `v3` …依次递增，**历史版本保留可下载，不覆盖、不合并**（方便回看与回退）
+- **当前脚本版本**：`v3.27`（Release `v27`）
 - Release 标题括号里是**脚本自身的版本号**（如 `v3（脚本 v3.3）`、`v4（脚本 v3.4）`），与文件头、日志里的版本一致
 - 每个 Release 都带完整包 zip、各脚本单文件与 `SHA256SUMS.txt` 校验文件，按需下载即可
 - 下载页：<https://github.com/L0NE-6/WorkBuddy-Daily/releases>；青龙 / Actions 想固定版本就下对应 Release 的资产，想跟最新就用仓库 `main`

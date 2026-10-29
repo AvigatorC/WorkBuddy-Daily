@@ -1,5 +1,13 @@
 # 更新日志
 
+## v3.27（2026-10-29）
+
+- 修复 CN Token 续期请求头：`refresh_one` 现在携带当前 AT 的 `Authorization: Bearer ...`、`X-Request-ID`（32 hex 毫秒前缀）、`X-User-Id`（AT 的 `sub`）与 `X-Domain: www.workbuddy.cn`，保留 `X-Refresh-Token` / `X-Auth-Refresh-Source` 与空 `{}` body；无 AT/uid 时不伪造身份头。
+- 修复 `credits_report.py` 个人资源包查询：`get-user-resource` 改为 `PageNumber=1` / `PageSize=100` / `ProductCode=p_tcaca` / `Status=[0,3]` + 到期时间窗；解析 `CycleCapacityRemain[Precise]`，`CapacityType=4` 按月度资源处理，并兼容旧 `CapacityRemain` / 无 `CapacityType` 回包。
+- `credits_report.py` 支持 store 条目显式带 `enterpriseId` 时只读查询 `/v2/billing/meter/get-enterprise-user-usage`（404 回退网页无 `/v2` 路径），解析 `limit_num`/`limitNum` 与 `used_num`/`usedNum`，`-1` 表示不限量；报告注明企业账号不支持每日签到，不发起签到请求。
+- 账号结构说明：`workbuddy_daily.py` 归一后的账号仍只有 `note` / `access_token` / `refresh_token`，不携带 `enterpriseId`；因此主脚本不做 JWT / `token_source` 猜测式企业识别，`credits_report.py` 仅在 store 显式字段存在时启用企业分支。
+- 新增续期头/无 AT 形态、个人查询体、月包与旧回包、企业解析/404 回退回归，测试总数 55 项。
+
 ## v3.26（2026-10-28）
 
 - 修复 Issue #39：`Model_chat_GLM5.2` / `create_canvas` / `Buddy_App_QQ` 等任务不再下发时，`prog()` 返回 `(None, None, None)`，而旧判断 `st not in ("completed", "claimed")` 对 `None` 恒为真 → 继续对已下线任务发真实对话，实测每轮白扣 0.12–0.16 积分。现统一按「未下发 → 跳过」处理并在日志标注。

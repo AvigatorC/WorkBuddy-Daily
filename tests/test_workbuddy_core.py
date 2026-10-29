@@ -436,6 +436,7 @@ class CoreBehaviorTests(unittest.TestCase):
     def test_401_refresh_helper_updates_state_once(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             store_path = os.path.join(temp_dir, "wb_refresh_tokens.json")
+            refresh_calls = []
             module = load_functions(
                 "_refresh_account_once",
                 os=os, json=json,
@@ -443,7 +444,8 @@ class CoreBehaviorTests(unittest.TestCase):
                     "strftime": staticmethod(lambda fmt: "2026-10-27 12:00"),
                 }),
                 REFRESH_STORE=store_path,
-                refresh_one=lambda rt: ("new-access", "new-refresh"),
+                refresh_one=lambda rt, at="": (
+                    refresh_calls.append((rt, at)) or ("new-access", "new-refresh")),
                 jwt_user=lambda token: "user-1",
                 _rebuild_token_file=lambda store: None,
             )
@@ -463,6 +465,68 @@ class CoreBehaviorTests(unittest.TestCase):
             self.assertEqual(
                 "new-refresh", store["user-1"]["refresh_token"])
             self.assertIn("已续期一次", " ".join(logs))
+            self.assertEqual([("old-refresh", "old-access")], refresh_calls)
+
+    def test_refresh_one_sends_cn_header_subset_and_empty_body(self):
+        session = FakeSession([FakeResponse(payload={
+            "code": 0,
+            "data": {"accessToken": "new-at", "refreshToken": "new-rt"},
+        })])
+        requests_module = type("Requests", (), {
+            "Session": staticmethod(lambda: session),
+        })
+        module = load_functions(
+            "refresh_one",
+            requests=requests_module,
+            REFRESH_URL="https://copilot.tencent.com/v2/plugin/auth/token/refresh",
+            REFRESH_DOMAIN="www.workbuddy.cn",
+            uid_of=lambda token: "uid-1",
+            _new_message_id=lambda: "0123456789abcdef0123456789abcdef",
+        )
+        self.assertEqual(("new-at", "new-rt"),
+                         module["refresh_one"]("old-rt", "old-at"))
+        method, url, kwargs = session.calls[0]
+        self.assertEqual("POST", method)
+        self.assertEqual(
+            "https://copilot.tencent.com/v2/plugin/auth/token/refresh", url)
+        self.assertEqual({}, kwargs["json"])
+        self.assertEqual({
+            "X-Refresh-Token": "old-rt",
+            "X-Auth-Refresh-Source": "plugin",
+            "Content-Type": "application/json",
+            "X-Request-ID": "0123456789abcdef0123456789abcdef",
+            "X-Domain": "www.workbuddy.cn",
+            "Authorization": "Bearer old-at",
+            "X-User-Id": "uid-1",
+        }, kwargs["headers"])
+
+    def test_refresh_one_without_at_keeps_legacy_identity_shape(self):
+        session = FakeSession([FakeResponse(payload={
+            "code": 0,
+            "data": {"accessToken": "new-at"},
+        })])
+        requests_module = type("Requests", (), {
+            "Session": staticmethod(lambda: session),
+        })
+        module = load_functions(
+            "refresh_one",
+            requests=requests_module,
+            REFRESH_URL="https://copilot.tencent.com/v2/plugin/auth/token/refresh",
+            REFRESH_DOMAIN="www.workbuddy.cn",
+            uid_of=lambda token: "should-not-be-used",
+            _new_message_id=lambda: "0123456789abcdef0123456789abcdef",
+        )
+        module["refresh_one"]("old-rt")
+        headers = session.calls[0][2]["headers"]
+        self.assertNotIn("Authorization", headers)
+        self.assertNotIn("X-User-Id", headers)
+        self.assertEqual({
+            "X-Refresh-Token",
+            "X-Auth-Refresh-Source",
+            "Content-Type",
+            "X-Request-ID",
+            "X-Domain",
+        }, set(headers))
 
     def test_black_cat_missing_task_does_not_run_fake_chat_attempts(self):
         chats = []

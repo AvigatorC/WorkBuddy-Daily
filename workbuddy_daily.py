@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🌱 WorkBuddy Daily - 全能签到脚本 v3.26
+🌱 WorkBuddy Daily - 全能签到脚本 v3.27
 ════════════════════════════════════════════════════════════════
 
 📌 这是什么
@@ -487,6 +487,9 @@ INFO_BACKUP = os.path.join(os.path.expanduser("~"), "AppData", "Local", "CodeBud
 # ---------- 账号 ----------
 # ---------- Token 自动续期（内联实现，无需外部文件） ----------
 REFRESH_URL = "https://copilot.tencent.com/v2/plugin/auth/token/refresh"
+REFRESH_DOMAIN = "www.workbuddy.cn"
+
+
 def _state_dir():
     """状态文件目录：`WORKBUDDY_STATE_DIR` 优先，未设置时用脚本同级目录（原行为）。
 
@@ -658,12 +661,28 @@ def jwt_user(tok):
         return "?"
 
 
-def refresh_one(rt):
-    """刷新单个RT，返回 (新AT, 新RT) 或 (None, 错误信息)"""
+def refresh_one(rt, at=""):
+    """刷新单个 RT，返回 (新 AT, 新 RT) 或 (None, 错误信息)。
+
+    CN 刷新端点同时要求当前 AT 与账号身份头；AT/uid 缺失时只保留
+    旧的 RT 刷新形态，不伪造身份。
+    """
+    headers = {
+        "X-Refresh-Token": rt,
+        "X-Auth-Refresh-Source": "plugin",
+        "Content-Type": "application/json",
+        "X-Request-ID": _new_message_id(),
+        "X-Domain": REFRESH_DOMAIN,
+    }
+    at = str(at or "").strip()
+    if at:
+        headers["Authorization"] = "Bearer " + at
+        uid = str(uid_of(at) or "").strip()
+        if uid:
+            headers["X-User-Id"] = uid
     s = requests.Session(); s.trust_env = False
     r = s.post(REFRESH_URL, json={}, timeout=20, verify=False,
-               headers={"X-Refresh-Token": rt, "X-Auth-Refresh-Source": "plugin",
-                        "Content-Type": "application/json"})
+               headers=headers)
     d = r.json()
     inner = d.get("data") or {}
     if d.get("code") == 0 and inner.get("accessToken"):
@@ -685,7 +704,7 @@ def refresh_all(verbose=True):
         if not rt:
             continue
         try:
-            at, nrt = refresh_one(rt)
+            at, nrt = refresh_one(rt, ent.get("access_token", ""))
         except Exception as e:
             at, nrt = None, str(e)[:60]
         if at:
@@ -800,7 +819,8 @@ def auto_refresh():
             for t in tips[:3]:
                 print("      · %s" % t)
         try:
-            at, nrt = refresh_one(ent.get("refresh_token", ""))
+            at, nrt = refresh_one(ent.get("refresh_token", ""),
+                                  ent.get("access_token", ""))
         except Exception:
             at, nrt = None, "err"
         if at:
@@ -830,7 +850,8 @@ def _refresh_account_once(acc, log):
         log("  ❌ 401 后需要续期，但该账号没有 RT，无法自动恢复")
         return False
     try:
-        access_token, next_refresh = refresh_one(refresh_token)
+        access_token, next_refresh = refresh_one(
+            refresh_token, acc.get("access_token", ""))
     except Exception as exc:
         log("  ❌ 401 后自动续期异常: %s" % str(exc)[:80])
         return False
