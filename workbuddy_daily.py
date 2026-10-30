@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🌱 WorkBuddy Daily - 全能签到脚本 v3.27
+🌱 WorkBuddy Daily - 全能签到脚本 v3.28
 ════════════════════════════════════════════════════════════════
 
 📌 这是什么
@@ -648,7 +648,8 @@ def _token_sanity(rt, at):
             tips.append("AT 的 typ=%s（应为 Bearer）——AT/RT 可能写反了" % typ)
         if iss and iss not in (
                 "https://www.codebuddy.cn/auth/realms/copilot",
-                "https://www.workbuddy.cn/auth/realms/copilot"):
+                "https://www.workbuddy.cn/auth/realms/copilot",
+                "https://copilot.tencent.com/auth/realms/copilot"):
             tips.append("%s 的签发域是 %s，不在已知的国内 WorkBuddy 签发域中，请核对凭据来源" % (name, iss[:70]))
     return tips
 

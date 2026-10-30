@@ -94,11 +94,13 @@ class CoreBehaviorTests(unittest.TestCase):
             return "eyJ." + payload + ".signature"
         sanity = namespace["_token_sanity"]
         for issuer in ("https://www.codebuddy.cn/auth/realms/copilot",
-                       "https://www.workbuddy.cn/auth/realms/copilot"):
+                       "https://www.workbuddy.cn/auth/realms/copilot",
+                       "https://copilot.tencent.com/auth/realms/copilot"):
             with self.subTest(issuer=issuer):
                 self.assertEqual([], sanity(token(issuer, "Offline"), token(issuer, "Bearer")))
         for issuer in ("https://codebuddy.cn.evil.example/auth/realms/copilot",
                        "https://www.workbuddy.cn.evil.example/auth/realms/copilot",
+                       "https://copilot.tencent.com.evil.example/auth/realms/copilot",
                        "https://www.codebuddy.ai/auth/realms/copilot"):
             with self.subTest(issuer=issuer):
                 self.assertTrue(any("签发域" in tip for tip in

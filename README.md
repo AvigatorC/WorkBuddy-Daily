@@ -103,7 +103,10 @@ pip3 install requests
 
 | Secret 名称 | 必填 | 值 |
 | :--- | :---: | :--- |
-| `WORKBUDDY_REFRESH_TOKEN` | ✅ | 每行一个 `手机号:AT:RT`（多账号换行分隔） |
+| `WORKBUDDY_REFRESH_TOKEN` | ⬜ | 国内版账号，每行一个 `手机号:AT:RT`（多账号换行分隔）；只跑国际版可留空 |
+| `WORKBUDDY_INTL_TOKENS` | ⬜ | 国际版多账号，换行或 `&` 分隔；每条 `token` / `备注\|token` / `备注\|token\|uid` / `备注\|token\|uid\|refresh_token` |
+| `WORKBUDDY_TOKEN` | ⬜ | 国际版单账号兜底（登录态） |
+| `WORKBUDDY_INTL_MODELS` | ⬜ | 可选，国际版保活模型链，逗号分隔 |
 | `PUSHPLUS_TOKEN` | ⬜ | 可选，PushPlus 推送令牌 |
 | `BARK_URL` | ⬜ | 可选，Bark 推送（iOS），如 `https://api.day.app/xxxxxxxx` |
 | `WXPUSHER_APP_TOKEN` | ⬜ | 可选，WxPusher 应用令牌（`AT_` 开头），在 wxpusher.zjiecode.com 创建应用后获得 |
@@ -125,6 +128,8 @@ pip3 install requests
 | `WORKBUDDY_MAKEUP_MAX_PER_RUN` | ⬜ | 可选，每轮最多补签几张（默认 `1`，最高 `10`） |
 
 > 点 **New repository secret**，Name 填上面的名称，Secret 粘贴对应的值，保存。
+>
+> 同一个 workflow 会自动检测配置：只配国内就只跑 `workbuddy_daily.py`，只配国际就只跑 `workbuddy_intl_daily.py`，两边都配则依次执行。
 
 ### 第 2 步：开启 Actions
 进入仓库 **Actions** 标签页，若提示需要启用，点 **I understand my workflows, go ahead and enable them**。

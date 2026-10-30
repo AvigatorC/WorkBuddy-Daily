@@ -1,5 +1,12 @@
 # 更新日志
 
+## v3.28（2026-10-30）
+
+- 修复 Issue #40：凭据体检接受 `https://copilot.tencent.com/auth/realms/copilot` 国内签发域，登录工具产出的 CN Token 不再被误报为未知来源；v3.27 的续期头修复继续生效。
+- 修复 Issue #41：GitHub Actions 工作流会自动检测国内 / 国际版 Secrets，分别运行 `workbuddy_daily.py` 与 `workbuddy_intl_daily.py`；只配置其中一种时不会空跑另一种。
+- 私有仓库持久化运行状态时同步保存 `wb_intl_tokens.json`，避免国际版轮换后的 refreshToken 在干净 runner 上丢失。
+- 补充 `copilot.tencent.com` 签发域与相似域名回归测试。
+
 ## v3.27（2026-10-29）
 
 - 修复 CN Token 续期请求头：`refresh_one` 现在携带当前 AT 的 `Authorization: Bearer ...`、`X-Request-ID`（32 hex 毫秒前缀）、`X-User-Id`（AT 的 `sub`）与 `X-Domain: www.workbuddy.cn`，保留 `X-Refresh-Token` / `X-Auth-Refresh-Source` 与空 `{}` body；无 AT/uid 时不伪造身份头。
