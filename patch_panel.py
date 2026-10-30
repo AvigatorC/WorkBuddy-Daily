@@ -1,186 +1,140 @@
 # -*- coding: utf-8 -*-
-"""把「呆呆面板」定制补丁打到上游 workbuddy_daily.py 上。
+"""把「呆呆面板」定制补丁打到上游 workbuddy_daily.py 上，并校验守卫没被同步冲掉。
 
-适用基线：上游 v3.25 及以上（已含 WORKBUDDY_STATE_DIR / _state_dir）。
+适用基线：上游 v3.28 及以上。
 
-上游不含、必须重新应用的定制：
-  1. 下架任务守卫    _needs_do()：已下架(st=None)/已完成任务不再重复执行
-  2. 签到结论回传    t_sign 通过 status_out 回传 checked_in，供退出码判定
-  3. 通知策略        WORKBUDDY_NOTIFY=fail（默认，仅失败推）/ always / 0
-  4. 退出码          main() 返回 0/1，签到失败时让面板判定任务失败并告警
+上游 v3.26 起已经自带「任务未下发就不发请求」的守卫（issue #39），所以本脚本
+**不再插入 `_needs_do()` 之类的守卫代码**——只在末尾用 verify_guards() 断言它们
+还在。历史上正是「插入 helper 但调用点没跟上」导致画布对话空跑扣费，这里改成
+「不碰守卫，只校验」。
 
-注意：状态目录(_state_dir)已由上游 v3.23 合入（PR #35），本脚本不再重复打补丁。
+上游不含、必须重新应用的定制只有两条：
+  1. 通知策略  WORKBUDDY_NOTIFY 默认 fail（Server酱 免费版每天仅 5 条）
+  2. 退出码    main() 返回 0/1，签到失败时让面板判定任务失败并告警
 
 用法：
-    python patch_panel.py <上游脚本> <输出文件>
+    python patch_panel.py <上游脚本> <输出文件> [上游测试文件 <测试输出文件>]
 """
 
 import io
+import re
 import sys
 
+if len(sys.argv) < 3:
+    raise SystemExit("用法: python patch_panel.py <上游脚本> <输出文件> "
+                     "[上游测试文件 <测试输出文件>]")
+
 SRC, DST = sys.argv[1], sys.argv[2]
-text = io.open(SRC, encoding="utf-8", newline="").read()
-had_crlf = "\r\n" in text
-text = text.replace("\r\n", "\n")
+TEST_SRC = sys.argv[3] if len(sys.argv) > 3 else None
+TEST_DST = sys.argv[4] if len(sys.argv) > 4 else None
 
 applied = []
 
 
-def sub(old, new, label):
-    global text
+def _read(path):
+    text = io.open(path, encoding="utf-8", newline="").read()
+    return text.replace("\r\n", "\n"), "\r\n" in text
+
+
+def _write(path, text, had_crlf):
+    out = text.replace("\n", "\r\n") if had_crlf else text
+    io.open(path, "w", encoding="utf-8", newline="").write(out)
+
+
+def sub(old, new, label, text):
     n = text.count(old)
     if n != 1:
         raise SystemExit("补丁失败 [%s]：期望命中 1 处，实际 %d 处" % (label, n))
-    text = text.replace(old, new, 1)
     applied.append(label)
+    return text.replace(old, new, 1)
 
 
-def sub_any(pairs, label):
-    """多形态匹配：上游不同版本措辞可能微调，命中其一即可。"""
-    global text
-    for old, new in pairs:
-        if text.count(old) == 1:
-            text = text.replace(old, new, 1)
-            applied.append(label)
-            return
-    raise SystemExit("补丁失败 [%s]：所有候选形态都未唯一命中" % label)
+text, had_crlf = _read(SRC)
 
+# ------------------------------------------------- 0 版本头标注面板定制
+text, n = re.subn(r"(🌱 WorkBuddy Daily - 全能签到脚本 v[\d.]+)\n",
+                  r"\1（呆呆面板定制）\n", text, count=1)
+if n != 1:
+    raise SystemExit("补丁失败 [0-header]：版本行未命中")
+applied.append("0-header")
 
-# ------------------------------------------------------- 1 _needs_do 守卫
-# 锚点必须从 `def prog(s, code):` 起算：_mp_prog() 的结尾与 prog() 完全相同，
-# 仅靠函数尾部的 return 会命中 2 处。
-sub(
-    'def prog(s, code):\n'
-    '    try:\n'
-    '        r = s.get(BASE + "/v2/activity/growth/tasks", timeout=25, verify=False).json()\n'
-    '        for t in r.get("data", {}).get("tasks", []):\n'
-    '            if t.get("task_code") == code:\n'
-    '                pr = t.get("progress") or {}\n'
-    '                return t.get("accept_status", ""), pr.get("current"), pr.get("target")\n'
-    '    except Exception:\n'
-    '        pass\n'
-    '    return None, None, None\n',
-    'def prog(s, code):\n'
-    '    try:\n'
-    '        r = s.get(BASE + "/v2/activity/growth/tasks", timeout=25, verify=False).json()\n'
-    '        for t in r.get("data", {}).get("tasks", []):\n'
-    '            if t.get("task_code") == code:\n'
-    '                pr = t.get("progress") or {}\n'
-    '                return t.get("accept_status", ""), pr.get("current"), pr.get("target")\n'
-    '    except Exception:\n'
-    '        pass\n'
-    '    return None, None, None\n'
+# ------------------------------------------------- 1 通知策略：默认 fail
+text = sub(
+    '   WORKBUDDY_NOTIFY          【可选】推送策略，默认 always（每次运行都推，与原行为一致）\n'
+    '                             always → 每次都推\n'
+    '                             fail   → 仅本轮有异常时推（签到未确认、账号异常中断）\n'
+    '                             0      → 完全关闭推送\n',
+    '   WORKBUDDY_NOTIFY          【可选】推送策略，默认 fail（仅失败推，省额度）\n'
+    '                              fail / 未设 → 仅签到失败时推\n'
+    '                              always     → 每次都推（调试用）\n'
+    '                              0          → 完全关闭\n',
+    "1-doc-notify", text)
+
+text = sub(
+    '    """按 WORKBUDDY_NOTIFY 策略决定是否推送。\n'
     '\n'
-    '\n'
-    'def _needs_do(s, code):\n'
-    '    """任务是否真的还需要做：只有「明确存在于列表且未完成」才返回 True。\n'
-    '\n'
-    '    关键点：`prog()` 读不到任务时返回 st=None。若把它当成「未完成」继续执行，\n'
-    '    轻则白发一轮上报，重则真发对话、真扣积分（实测 Model_chat_GLM5.2 已下架，\n'
-    '    每次仍跑一次 GLM-5.2 对话）。所以 None 一律视为「不要做」。\n'
+    '    always（默认，保持原行为）  每次运行都推\n'
+    '    fail                        仅本轮不「一切正常」时推\n'
+    '    0 / off / none              完全不推\n'
     '    """\n'
-    '    st, cur, tgt = prog(s, code)\n'
-    '    return st is not None and st not in ("completed", "claimed")\n',
-    "1-needs-do",
-)
-
-# ------------------------------------------------------- 2 t_sign status_out
-sub(
-    'def t_sign(s, uid, nick, log):\n'
-    '    """每日签到 + 签到活动读数（连签天数 / 累计积分 / 连签奖励日）\n'
+    '    mode = (os.environ.get("WORKBUDDY_NOTIFY") or "always").strip().lower()\n',
+    '    """按 WORKBUDDY_NOTIFY 策略决定是否推送。\n'
     '\n'
-    '    先查活动状态，确认在活动期且今天未签才 POST。daily-checkin 对瞬时错误\n'
-    '    （网络/5xx）有界重试，但空 200、业务失败或没有 credit 的响应不再写成成功。\n'
-    '    """\n',
-    'def t_sign(s, uid, nick, log, status_out=None):\n'
-    '    """每日签到 + 签到活动读数（连签天数 / 累计积分 / 连签奖励日）\n'
-    '\n'
-    '    先查活动状态，确认在活动期且今天未签才 POST。daily-checkin 对瞬时错误\n'
-    '    （网络/5xx）有界重试，但空 200、业务失败或没有 credit 的响应不再写成成功。\n'
-    '\n'
-    '    `status_out` 是调用方传入的 dict，用于回传签到结论，供进程退出码判定：\n'
-    '      checked_in   True=今天确实已签（含幂等命中）\n'
-    '    """\n',
-    "2a-t_sign-signature",
-)
-
-# 各「签到成功」分支标记 checked_in
-for label, old, new in [
-    (
-        "2b-sign-already",
-        '    if status_data.get("today_checked_in") in (True, 1):\n'
-        '        log("   ✅签到: 今天已签到%s" % _checkin_tail(s))\n'
-        '        t_daily_activity(s, uid, nick, log)\n'
-        '        return\n',
-        '    if status_data.get("today_checked_in") in (True, 1):\n'
-        '        log("   ✅签到: 今天已签到%s" % _checkin_tail(s))\n'
-        '        if status_out is not None:\n'
-        '            status_out["checked_in"] = True\n'
-        '        t_daily_activity(s, uid, nick, log)\n'
-        '        return\n',
-    ),
-    (
-        "2c-sign-credit",
-        '        log("   ✅签到成功 +%s积分%s%s" % (\n'
-        '            claim_data.get("credit"), _checkin_tail(s),\n'
-        '            "（状态稍后刷新）" if pending else ""))\n'
-        '        t_daily_activity(s, uid, nick, log)\n'
-        '        return\n',
-        '        log("   ✅签到成功 +%s积分%s%s" % (\n'
-        '            claim_data.get("credit"), _checkin_tail(s),\n'
-        '            "（状态稍后刷新）" if pending else ""))\n'
-        '        if status_out is not None:\n'
-        '            status_out["checked_in"] = True\n'
-        '        t_daily_activity(s, uid, nick, log)\n'
-        '        return\n',
-    ),
-    (
-        "2d-sign-already-claimed",
-        '        log("   ✅签到: %s%s" % (message, _checkin_tail(s)))\n'
-        '        t_daily_activity(s, uid, nick, log)\n'
-        '        return\n',
-        '        log("   ✅签到: %s%s" % (message, _checkin_tail(s)))\n'
-        '        if status_out is not None:\n'
-        '            status_out["checked_in"] = True\n'
-        '        t_daily_activity(s, uid, nick, log)\n'
-        '        return\n',
-    ),
-    (
-        "2e-sign-code10001",
-        '            log("   ✅签到: 状态回读确认今日已签%s" % _checkin_tail(s))\n'
-        '            t_daily_activity(s, uid, nick, log)\n'
-        '            return\n',
-        '            log("   ✅签到: 状态回读确认今日已签%s" % _checkin_tail(s))\n'
-        '            if status_out is not None:\n'
-        '                status_out["checked_in"] = True\n'
-        '            t_daily_activity(s, uid, nick, log)\n'
-        '            return\n',
-    ),
-]:
-    sub(old, new, label)
-
-# ------------------------------------------------------- 3 聊天任务下架守卫
-sub(
-    'def t_chat_n(s, uid, nick, log, code, n, prompts):\n'
-    '    """通用聊天任务: chat_5 / Model_chat_GLM5.2"""\n'
-    '    for i in range(n):\n',
-    'def t_chat_n(s, uid, nick, log, code, n, prompts):\n'
-    '    """通用聊天任务: chat_5 / Model_chat_GLM5.2\n'
-    '\n'
-    '    ⚠️ 上游会随时下架任务。`prog()` 读不到时返回 st=None，若此时仍发对话，\n'
-    '    会真实调用模型、真实扣积分（实测 Model_chat_GLM5.2 已下架）。\n'
+    '    fail（默认，省 Server酱 额度）  仅本轮不「一切正常」时推\n'
+    '    always                          每次运行都推（调试用）\n'
+    '    0 / off / none                  完全不推\n'
     '    """\n'
-    '    st, cur, tgt = prog(s, code)\n'
-    '    if st is None:\n'
-    '        log("   %s: 不在当前任务列表（已下架/改名），跳过，不发对话" % code)\n'
-    '        return\n'
-    '    for i in range(n):\n',
-    "3-chat-n-guard",
-)
+    '    mode = (os.environ.get("WORKBUDDY_NOTIFY") or "fail").strip().lower()\n',
+    "2-notify-default-fail", text)
 
-# ------------------------------------------------------- 4 run_account 接线
-sub(
-    '    _run("每日签到", ["checkin"], lambda: t_sign(s, uid, nick, log))\n',
+# ------------------------------------------------- 2 退出码：main() 返回 0/1
+text = sub(
+    '    # 推送摘要（完整日志见青龙日志/控制台）\n'
+    '    _notify_or_skip(summaries)\n',    '    # 推送摘要（完整日志见青龙日志/控制台）\n'
+    '    if QUERY_ONLY:\n'
+    '        # 只查不做的模式不该推送，也不该被面板判失败\n'
+    '        return 0\n'
+    '    _notify_or_skip(summaries)\n'
+    '    return _exit_code(summaries)\n',
+    "3-main-exit-code-call", text)
+
+text = sub(
+    '    send_notify_all("🌱 WorkBuddy 签到报告", build_summary(summaries))\n',
+    '    send_notify_all("🌱 WorkBuddy 签到报告", build_summary(summaries))\n'
+    '\n'
+    '\n'
+    'def _exit_code(summaries):\n'
+    '    """面板按退出码判定任务成败：有账号签到未确认 → 1。\n'
+    '\n'
+    '    企业版 / 用户用白名单显式跳过签到的账号不算失败，否则每天都会误报。\n'
+    '    """\n'
+    '    for sm in summaries:\n'
+    '        if sm.get("checked_in"):\n'
+    '            continue\n'
+    '        if sm.get("checkin_skipped") or sm.get("enterprise"):\n'
+    '            continue\n'
+    '        print("❌ 签到未成功确认: 账号%s（详见上方输出）" % sm.get("idx"))\n'
+    '        print("   退出码 1 —— 调度器会据此判定本次任务失败并告警")\n'
+    '        return 1\n'
+    '    return 0\n',
+    "4-exit-code-func", text)
+
+text = sub(
+    'if __name__ == "__main__":\n'
+    '    main()\n',
+    'if __name__ == "__main__":\n'
+    '    sys.exit(main())\n',
+    "5-entry-sys-exit", text)
+
+# ------------------------------------------------- 2b 签到结论回传（退出码依赖）
+text = sub(
+    '    `status_out` 为调用方传入的 dict，用于回传签到结论供通知策略判断：\n',
+    '    `status_out` 是调用方传入的 dict，用于回传签到结论，供退出码与通知策略判定：\n',
+    "2b-status-doc", text)
+
+text = sub(
+    '    _checkin_state = {}\n'
+    '    _run("每日签到", ["checkin"], lambda: t_sign(s, uid, nick, log, _checkin_state))\n',
     '    _checkin_state = {}\n'
     '    if want("checkin"):\n'
     '        _run("每日签到", ["checkin"], lambda: t_sign(s, uid, nick, log, _checkin_state))\n'
@@ -189,84 +143,60 @@ sub(
     '        # 这是他自己的选择，不应被判为失败（否则每天都会误报退出码 1）。\n'
     '        log("   ⏭️ 每日签到: 按配置跳过（不在本次任务白名单内）")\n'
     '        _checkin_state["skipped"] = True\n',
-    "4-run-account-wiring",
-)
+    "2c-checkin-wiring", text)
 
-sub(
-    '    summary.update({"done": done, "total": len(st_all), "rest": rest,\n'
-    '                    "level": prof2.get("level", "?"), "energy": energy})\n',
-    '    summary.update({"done": done, "total": len(st_all), "rest": rest,\n'
-    '                    "level": prof2.get("level", "?"), "energy": energy})\n'
-    '    # 签到结论（供进程退出码判定；未执行/未确认一律 False）\n'
+text = sub(
+    '    # 签到结论：供 WORKBUDDY_NOTIFY 判断本轮是否「正常」\n'
+    '    summary["checked_in"] = bool(_checkin_state.get("checked_in"))\n',
+    '    # 签到结论（供退出码与 WORKBUDDY_NOTIFY 判定；未执行/未确认一律 False）\n'
     '    summary["checked_in"] = bool(_checkin_state.get("checked_in"))\n'
     '    summary["checkin_skipped"] = bool(summary.get("enterprise") or _checkin_state.get("skipped"))\n',
-    "5-summary-checkin",
+    "2d-summary-checkin-skipped", text)
+
+# ------------------------------------------------- 3 守卫必须还在（不插入，只校验）
+GUARD_ANCHORS = (
+    ("t_chat_n 未下发守卫", 'if st is None:\n            # 任务未下发'),
+    ("create_canvas 未下发守卫", "canvas_st is None"),
+    ("playbook_prompt 未下发守卫", "playbook_st is None"),
+    ("RichMeow_Chat 未下发守卫", "need_rich = rich_st is not None"),
+    ("skill_1 未下发守卫", "need_skill = skill_st is not None"),
 )
 
-# ------------------------------------------------------- 5 main 退出码 + 推送
-sub_any([
-    (
-        '    # 推送摘要（完整日志见青龙日志/控制台）\n'
-        '    send_notify_all("🌱 WorkBuddy 签到报告", build_summary(summaries))\n'
-        '\n'
-        '\n'
-        'from concurrent.futures import ThreadPoolExecutor, as_completed\n'
-        '\n'
-        'if __name__ == "__main__":\n'
-        '    main()\n',
-        '    # ---- 退出码与推送 ----\n'
-        '    # ⚠️ Server酱 免费版每天只有 5 条额度，所以**成功必须静默**。\n'
-        '    # WORKBUDDY_NOTIFY 取值：fail（默认，仅失败推）/ always（调试用）/ 0（关闭）\n'
-        '    if QUERY_ONLY:\n'
-        '        return 0\n'
-        '    failed_accounts = []\n'
-        '    for sm in summaries:\n'
-        '        if sm.get("checked_in"):\n'
-        '            continue\n'
-        '        # 企业版/无个人成长体系：上游本就不支持签到，不算失败\n'
-        '        if sm.get("checkin_skipped") or sm.get("enterprise"):\n'
-        '            continue\n'
-        '        failed_accounts.append(sm.get("idx"))\n'
-        '\n'
-        '    notify_mode = (os.environ.get("WORKBUDDY_NOTIFY") or "fail").strip().lower()\n'
-        '    if notify_mode != "0":\n'
-        '        if failed_accounts:\n'
-        '            print("")\n'
-        '            print("❌ 签到未成功确认的账号: %s（详见上方各账号输出）"\n'
-        '                  % "、".join("账号%d" % i for i in failed_accounts))\n'
-        '            send_notify_all("❌ WorkBuddy 签到失败", build_summary(summaries))\n'
-        '        elif notify_mode == "always":\n'
-        '            send_notify_all("🌱 WorkBuddy 签到报告", build_summary(summaries))\n'
-        '        else:\n'
-        '            print("ℹ️ 签到正常，静默不推送（节省 Server酱 额度）")\n'
-        '\n'
-        '    if failed_accounts:\n'
-        '        print("   退出码 1 —— 调度器会据此判定本次任务失败并告警")\n'
-        '        return 1\n'
-        '    return 0\n'
-        '\n'
-        '\n'
-        'from concurrent.futures import ThreadPoolExecutor, as_completed\n'
-        '\n'
-        'if __name__ == "__main__":\n'
-        '    sys.exit(main())\n',
-    ),
-], "6-main-exit-code")
 
-# ------------------------------------------------------- 6 文档补充
-sub_any([
-    (
-        '   SERVERCHAN_SENDKEY        【可选】Server酱 微信推送（免费每天 5 条）：https://sct.ftqq.com\n'
-        '                             sctp 开头的是「方糖」专属通道，脚本会自动走对应域名\n',
-        '   SERVERCHAN_SENDKEY        【可选】Server酱 微信推送（免费每天 5 条）：https://sct.ftqq.com\n'
-        '                             sctp 开头的是「方糖」专属通道，脚本会自动走对应域名\n'
-        '   WORKBUDDY_NOTIFY          【可选】推送策略，默认 fail（仅失败推，省额度）\n'
-        '                              fail / 未设 → 仅签到失败时推\n'
-        '                              always     → 每次都推（调试用）\n'
-        '                              0          → 完全关闭\n',
-    ),
-], "7-doc-notify")
+def verify_guards(source):
+    """上游一旦把守卫删掉，这里必须炸——否则画布/聊天会重新空跑扣费。"""
+    missing = [label for label, anchor in GUARD_ANCHORS if anchor not in source]
+    if missing:
+        raise SystemExit(
+            "守卫校验失败：上游这次同步缺少 %s。\n"
+            "请先按 issue #39 的做法补回 `st is None` 守卫，再部署；"
+            "否则已下线的任务会继续真发对话、真扣积分。" % "、".join(missing))
 
-out = text.replace("\n", "\r\n") if had_crlf else text
-io.open(DST, "w", encoding="utf-8", newline="").write(out)
+
+verify_guards(text)
+applied.append("6-verify-guards")
+
+_write(DST, text, had_crlf)
+
+# ------------------------------------------------- 4 测试里的默认策略断言
+if TEST_SRC and TEST_DST:
+    ttext, t_crlf = _read(TEST_SRC)
+    ttext = sub(
+        '    def test_notify_policy_always_is_default(self):\n'
+        '        """不设 WORKBUDDY_NOTIFY 时必须每次推送，保持原行为。"""\n',
+        '    def test_notify_policy_fail_is_default(self):\n'
+        '        """呆呆面板定制：不设 WORKBUDDY_NOTIFY 时默认 fail（Server酱 免费版每天仅 5 条）。"""\n',
+        "7-test-name", ttext)
+    ttext = sub(
+        '            module["_notify_or_skip"]([{"idx": 1, "checked_in": True}])\n'
+        '            self.assertEqual(1, len(sent))\n'
+        '            module["_notify_or_skip"]([{"idx": 1, "checked_in": False}])\n'
+        '            self.assertEqual(2, len(sent))\n',
+        '            module["_notify_or_skip"]([{"idx": 1, "checked_in": True}])\n'
+        '            self.assertEqual(0, len(sent))\n'
+        '            module["_notify_or_skip"]([{"idx": 1, "checked_in": False}])\n'
+        '            self.assertEqual(1, len(sent))\n',
+        "8-test-assert", ttext)
+    _write(TEST_DST, ttext, t_crlf)
+
 print("已应用 %d 个补丁：%s" % (len(applied), ", ".join(applied)))

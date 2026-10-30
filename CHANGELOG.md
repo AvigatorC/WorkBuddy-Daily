@@ -1,5 +1,56 @@
 # 更新日志
 
+## 呆呆面板定制（基于上游 v3.28，2026-10-30）
+
+- 合并上游 v3.26 ~ v3.28：带入 issue #39 的「未下发任务守卫」（`create_canvas` / `playbook_prompt` / `Model_chat_GLM5.2` / `Buddy_App_QQ` / `RichMeow_Chat` / `skill_1`）、v3.27 的 CN 续期头与积分查询口径、v3.28 的 CN 签发域与 Actions 自动分流。
+- **根因复盘**：面板分支此前用 `patch_panel.py` 打补丁时，只插入了 `_needs_do()` 的定义、没有插入任何调用点；随后用上游 v3.25 覆盖，守卫彻底失效。`create_canvas` 自 2026-10-27 12:30 起每次运行都真发一次海报对话（实测 -0.05 ~ -0.24 积分/次，每天 00:10 / 18:10 各一次）。
+- 面板定制收敛为两条，不再自造守卫：`WORKBUDDY_NOTIFY` 默认 `fail`（Server酱 免费版每天仅 5 条）；`main()` 返回 0/1 让面板判定任务失败并告警（企业号 / 白名单显式跳过签到不算失败）。
+- `patch_panel.py` 重写为「不碰守卫，只校验」：末尾 `verify_guards()` 断言 6 处守卫仍在，上游若再次删守卫会直接报错，而不是静默部署。
+- `check_patches.py` 重写为静态校验（23 项）；新增 `tests/test_panel_guards.py`（退出码语义 + 守卫不变量），不改动上游测试文件，避免同步冲突。
+- 测试：上游 `tests/test_workbuddy_core.py` 43 项 + `tests/test_credits_report.py` 7 项 + `tests/test_panel_guards.py` 8 项全部通过。
+
+## v3.28（2026-10-30）
+
+- 修复 Issue #40：凭据体检接受 `https://copilot.tencent.com/auth/realms/copilot` 国内签发域，登录工具产出的 CN Token 不再被误报为未知来源；v3.27 的续期头修复继续生效。
+- 修复 Issue #41：GitHub Actions 工作流会自动检测国内 / 国际版 Secrets，分别运行 `workbuddy_daily.py` 与 `workbuddy_intl_daily.py`；只配置其中一种时不会空跑另一种。
+- 私有仓库持久化运行状态时同步保存 `wb_intl_tokens.json`，避免国际版轮换后的 refreshToken 在干净 runner 上丢失。
+- 补充 `copilot.tencent.com` 签发域与相似域名回归测试。
+
+## v3.27（2026-10-29）
+
+- 修复 CN Token 续期请求头：`refresh_one` 现在携带当前 AT 的 `Authorization: Bearer ...`、`X-Request-ID`（32 hex 毫秒前缀）、`X-User-Id`（AT 的 `sub`）与 `X-Domain: www.workbuddy.cn`，保留 `X-Refresh-Token` / `X-Auth-Refresh-Source` 与空 `{}` body；无 AT/uid 时不伪造身份头。
+- 修复 `credits_report.py` 个人资源包查询：`get-user-resource` 改为 `PageNumber=1` / `PageSize=100` / `ProductCode=p_tcaca` / `Status=[0,3]` + 到期时间窗；解析 `CycleCapacityRemain[Precise]`，`CapacityType=4` 按月度资源处理，并兼容旧 `CapacityRemain` / 无 `CapacityType` 回包。
+- `credits_report.py` 支持 store 条目显式带 `enterpriseId` 时只读查询 `/v2/billing/meter/get-enterprise-user-usage`（404 回退网页无 `/v2` 路径），解析 `limit_num`/`limitNum` 与 `used_num`/`usedNum`，`-1` 表示不限量；报告注明企业账号不支持每日签到，不发起签到请求。
+- 账号结构说明：`workbuddy_daily.py` 归一后的账号仍只有 `note` / `access_token` / `refresh_token`，不携带 `enterpriseId`；因此主脚本不做 JWT / `token_source` 猜测式企业识别，`credits_report.py` 仅在 store 显式字段存在时启用企业分支。
+- 新增续期头/无 AT 形态、个人查询体、月包与旧回包、企业解析/404 回退回归，测试总数 55 项。
+
+## v3.26（2026-10-28）
+
+- 修复 Issue #39：`Model_chat_GLM5.2` / `create_canvas` / `Buddy_App_QQ` 等任务不再下发时，`prog()` 返回 `(None, None, None)`，而旧判断 `st not in ("completed", "claimed")` 对 `None` 恒为真 → 继续对已下线任务发真实对话，实测每轮白扣 0.12–0.16 积分。现统一按「未下发 → 跳过」处理并在日志标注。
+- 覆盖范围：`t_chat_n`、`t_canvas_automation`（`create_canvas` / `automation_1` / `playbook_prompt`）、`t_buddy_apps`，以及桌面任务 `RichMeow_Chat` / `skill_1` 的 need 判定（未下发不再触发桌面对话）。
+- 采用「守卫而不归档」：与 `workstation_expert` 同策略，任务若重新下发会自动恢复；归档说明见 `archive/README.md`。
+- 新增 4 项「任务未下发不发请求」回归，测试总数 46 项。
+
+## v3.25（2026-10-27）
+
+- 修复 Issue #37：`black_cat` 未出现在当前任务列表时直接提示“任务未下发”并跳过，不再硬跑 3 次夜聊制造假失败。
+- 夜猫子仍只在 23:00–08:00 CST 窗口执行；已下发且已完成/已领取时保持原跳过逻辑。
+- 新增“任务缺失不发对话”回归，测试总数 38 项。
+
+## v3.24（2026-10-27）
+
+- 成长 profile 遇到 HTTP 401 时先用账号 RT 续期一次并重试；只有刷新失败或仍返回 401 才判登录失效。
+- 小程序任务 accept 后 `target<=0` 不再按 1 猜测进度，改为有界回读；仍为空则留到下一轮，避免假完成和无效领奖。
+- 合并社区 PR #36（感谢 @coderDJing）：凭据体检同时识别 `www.codebuddy.cn` 与 `www.workbuddy.cn` 的国内 copilot realm，不再把合法国内凭据误报为国际版。
+- 发版对齐：v23 的 Release 资产虽已对应 `v3.23` 代码，但 tag 仍指向 `v3.22` 提交；本版把 tag、Release、`main` 和脚本版本重新绑定。
+- 状态目录、国际版 403 分类、PC 灵感任务等沿用 v3.23；新增 401 续期、target 延迟下发与签发域回归，测试总数 37 项。
+
+## v3.23（2026-10-26）
+
+- 新增 `WORKBUDDY_STATE_DIR`（社区贡献 #35，感谢 @AvigatorC）：可把 `wb_refresh_tokens.json`、`WORKBUDDY_ACCESS_TOKEN.txt`、补偿防重和活跃去重状态统一放到持久目录；不设置时保持脚本同级目录的原行为。
+- 国际版保活对话的 `HTTP 403` 明确归类为「模型无权限，非账号风控」；真正的账号受限仍以 `11140 / request illegal` 为准，由预检直接识别。
+- 新增状态目录与 403 分类回归，测试总数增至 34 项。
+
 ## v3.22（2026-10-24）
 
 - 按 10-24 线上任务实测修正 `Sequential_Tasks_7`：该任务已标记为 `PC 限定`，不再属于小程序任务集合。

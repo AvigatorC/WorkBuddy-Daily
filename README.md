@@ -62,6 +62,7 @@ python workbuddy_intl_daily.py --only 1             # 只跑第一个账号
 > ⚠️ 国际版登录态与国内版不通用：`workbuddy.ai` 的令牌在 `copilot.tencent.com` 刷不了，反之亦然。
 >
 > 🚫 每个国际版账号在刷新 RT 和写操作前会先做一次只读状态预检；命中 `11140 / request illegal` 时明确标记为账号受限并结束该账号本轮，不继续刷新或重试。
+> ℹ️ 保活对话出现 `HTTP 403` 通常是当前免费模型无权限，**不是账号风控**；真正的账号受限以 `11140 / request illegal` 为准，预检会直接报「账号受限」。
 > 带上 `refresh_token` 时脚本会自动续期并写回 `wb_intl_tokens.json`；只给 AT 时按短期令牌使用。
 > 活动未开放属于正常状态，不会当成失败；签到成功与活跃结果分开报告，任一发失败都不会把签到判成失败。
 > 活动未开启但活跃上报 / 网页会话成功时，会按「今日活跃已完成」报告（积分由上游异步发放）。
@@ -102,12 +103,16 @@ pip3 install requests
 
 | Secret 名称 | 必填 | 值 |
 | :--- | :---: | :--- |
-| `WORKBUDDY_REFRESH_TOKEN` | ✅ | 每行一个 `手机号:AT:RT`（多账号换行分隔） |
+| `WORKBUDDY_REFRESH_TOKEN` | ⬜ | 国内版账号，每行一个 `手机号:AT:RT`（多账号换行分隔）；只跑国际版可留空 |
+| `WORKBUDDY_INTL_TOKENS` | ⬜ | 国际版多账号，换行或 `&` 分隔；每条 `token` / `备注\|token` / `备注\|token\|uid` / `备注\|token\|uid\|refresh_token` |
+| `WORKBUDDY_TOKEN` | ⬜ | 国际版单账号兜底（登录态） |
+| `WORKBUDDY_INTL_MODELS` | ⬜ | 可选，国际版保活模型链，逗号分隔 |
 | `PUSHPLUS_TOKEN` | ⬜ | 可选，PushPlus 推送令牌 |
 | `BARK_URL` | ⬜ | 可选，Bark 推送（iOS），如 `https://api.day.app/xxxxxxxx` |
 | `WXPUSHER_APP_TOKEN` | ⬜ | 可选，WxPusher 应用令牌（`AT_` 开头），在 wxpusher.zjiecode.com 创建应用后获得 |
 | `WXPUSHER_UID` | ⬜ | 可选，WxPusher 用户 UID（`UID_` 开头），多个用逗号/分号分隔 |
 | `SERVERCHAN_SENDKEY` | ⬜ | 可选，Server酱 微信推送（[官网](https://sct.ftqq.com) 免费获取，免费额度每天 5 条）。`sctp` 开头的是方糖专属通道，脚本会自动切到对应域名 |
+| `WORKBUDDY_NOTIFY` | ⬜ | 可选，推送策略：`always`（默认，每次运行都推）/ `fail`（仅本轮有异常时推：签到未确认、账号异常中断）/ `0`（关闭推送） |
 | `WECOM_WEBHOOK` | ⬜ | 可选，企业微信群机器人 webhook（或仅 key） |
 | `DINGTALK_WEBHOOK` | ⬜ | 可选，钉钉群机器人 webhook（安全设置：自定义关键词或加签） |
 | `DINGTALK_SECRET` | ⬜ | 可选，钉钉加签密钥（机器人选「加签」时必填） |
@@ -119,9 +124,12 @@ pip3 install requests
 | `WORKBUDDY_ACTIVITY_STATE` | ⬜ | 可选，每日活跃上报的本地去重文件路径 |
 | `WORKBUDDY_ACTIVITY_CHAT_FALLBACK` | ⬜ | 可选，合成活跃事件未点亮热力图时是否补一次真实对话（默认 `1`） |
 | `WORKBUDDY_BENEFIT_STATE` | ⬜ | 可选，补偿/礼包本地期次防重文件路径 |
+| `WORKBUDDY_STATE_DIR` | ⬜ | 可选，状态文件目录（`wb_refresh_tokens.json` / `WORKBUDDY_ACCESS_TOKEN.txt` / 补偿防重等）。不设＝脚本同级目录（原行为）；容器部署、脚本目录只读，或升级会覆盖脚本目录时，指向持久目录可避免轮换后的令牌库被一并替换 |
 | `WORKBUDDY_MAKEUP_MAX_PER_RUN` | ⬜ | 可选，每轮最多补签几张（默认 `1`，最高 `10`） |
 
 > 点 **New repository secret**，Name 填上面的名称，Secret 粘贴对应的值，保存。
+>
+> 同一个 workflow 会自动检测配置：只配国内就只跑 `workbuddy_daily.py`，只配国际就只跑 `workbuddy_intl_daily.py`，两边都配则依次执行。
 
 ### 第 2 步：开启 Actions
 进入仓库 **Actions** 标签页，若提示需要启用，点 **I understand my workflows, go ahead and enable them**。
@@ -302,6 +310,7 @@ python daily_forward.py daily.log --wx
 | `WXPUSHER_APP_TOKEN` | ⬜ | 可选，WxPusher 应用令牌（`AT_` 开头），[官网](https://wxpusher.zjiecode.com) 创建应用后获得 |
 | `WXPUSHER_UID` | ⬜ | 可选，WxPusher 用户 UID（`UID_` 开头，扫码关注后查看），多个用逗号/分号分隔 |
 | `SERVERCHAN_SENDKEY` | ⬜ | 可选，Server酱 微信推送（[官网](https://sct.ftqq.com) 免费获取，免费额度每天 5 条）。`sctp` 开头的 SendKey 会自动走方糖专属通道 |
+| `WORKBUDDY_NOTIFY` | ⬜ | 可选，推送策略：`always`（默认，每次运行都推）/ `fail`（仅本轮有异常时推：签到未确认、账号异常中断）/ `0`（关闭推送） |
 | `WECOM_WEBHOOK` | ⬜ | 可选，企业微信群机器人。填完整 webhook URL，或只填 key（自动补全域名） |
 | `DINGTALK_WEBHOOK` | ⬜ | 可选，钉钉群机器人。安全设置选「自定义关键词」时，标题里带该词即可；选「加签」则再加 `DINGTALK_SECRET` |
 | `DINGTALK_SECRET` | ⬜ | 可选，钉钉加签密钥（`SEC` 开头那串） |
@@ -313,6 +322,7 @@ python daily_forward.py daily.log --wx
 | `WORKBUDDY_ACTIVITY_STATE` | ⬜ | 可选，每日活跃上报的本地去重文件路径（默认 `workbuddy_activity_state.json`） |
 | `WORKBUDDY_ACTIVITY_CHAT_FALLBACK` | ⬜ | 可选，热力图仍为 0 时是否补一次真实对话（默认开启） |
 | `WORKBUDDY_BENEFIT_STATE` | ⬜ | 可选，补偿/礼包本地期次防重文件路径（默认 `workbuddy_benefit_state.json`） |
+| `WORKBUDDY_STATE_DIR` | ⬜ | 可选，状态文件目录（令牌库 `wb_refresh_tokens.json`、`WORKBUDDY_ACCESS_TOKEN.txt`、补偿防重等的默认落点）。不设＝脚本同级目录（原行为）；容器部署、脚本目录只读，或升级会覆盖脚本目录时，指向持久目录可避免轮换后的令牌库被一并替换 |
 | `WORKBUDDY_MAKEUP_MAX_PER_RUN` | ⬜ | 可选，每轮最多补签几张（默认 `1`，最高 `10`） |
 
 > 🎛️ **子任务开关怎么用？** 任务完成后领到的积分有**一个月有效期**，一次全领完容易放过期。
@@ -479,6 +489,8 @@ python daily_forward.py daily.log --wx
 - **🔄 API 重试**：网络错误 / 5xx 自动指数退避重试 3 次；`--gap` 可调写动作间隔防频控。
 - **🎛️ 子任务开关**：`WORKBUDDY_TASKS`（白名单）/ `WORKBUDDY_SKIP_TASKS`（黑名单）可自由裁剪要执行的子任务（含玩法），被跳过的任务不会被完成也不会被领奖——适合把积分分摊到后面几个月领。
 - **🔗 稳定设备指纹**：每账号稳定派生 machineId/sessionId/qimei36；国内桌面 UA、版本、commit、releaseDate、CPU/内存与 5.8.3 真机口径对齐。
+- **🔄 续期头对齐**：CN refresh 带当前 AT 的 `Authorization: Bearer ...`、`X-Request-ID`、`X-User-Id`、`X-Domain`；AT/uid 缺失时保持旧的纯 RT 刷新形态，不伪造身份。
+- **💰 积分明细口径**：`credits_report.py` 的 `get-user-resource` 带分页 / 产品码 / 状态 / 到期时间窗，按 `CycleCapacityRemain[Precise]` 与 `CapacityType=4` 区分月度资源；旧 `CapacityRemain` 回包仍可读。
 - **📡 多域上报**：桌面域 + Web 域 + 小程序域三通道事件上报，完整覆盖所有任务类型。
 - **🧹 网页会话收尾**：真实对话成功即 `stop`、失败再 `delete`，避免占满上游 10 条活跃会话；命中 10105 时自动清理同任务前缀的旧会话后重试。
 - **📋 进度感知**：只上报缺口数量的事件，不重复提交已完成的进度。
@@ -489,12 +501,12 @@ python daily_forward.py daily.log --wx
 - **📈 签到读数 + 到期预警**：签到后读签到活动状态，报告给出**签到连签天数 / 累计积分 / 距下一次连签奖励的天数**；距活动 `end_time` ≤7 天或活动已关闭时给出 ⚠️ 提示（避免“活动结束才发现收入断档”）。
 - **🧭 两种连签分开显示**：日志/推送统一写成「签到连签N天 | 活跃连签N天」——前者是积分签到活动（`checkin-activity-status.streak_days`），后者是成长中心热力墙（`growth/streak`，由使用事件驱动；成长任务全部领完后常为 0，属正常不属故障）。
 - **🧭 生态口径对齐**：画布 / 灵感走真实对话 + 桌面链，主题目录动态取真 `resource_key`，自动化任务用真实 rrule 对象；抽奖（`lottery/summary`）与兑换（`redeem/summary`）均带备用接口口径。
-- **🛡️ 单账号隔离 + 凭据体检**：续期前先本地体检 RT/AT（`typ=Offline`、签发域 `codebuddy.cn`、三段式），把 `token format error` 翻译成「粘反了 / 粘错文件 / 被截断」；任一账号凭据失效或中途异常只跳过该账号，**不会中断整轮运行**。
+- **🛡️ 单账号隔离 + 凭据体检**：续期前先本地体检 RT/AT（`typ=Offline`、签发域 `codebuddy.cn`、三段式），把 `token format error` 翻译成「粘反了 / 粘错文件 / 被截断」；运行中成长接口返回 401 时会先用该账号 RT 续期一次并重试，刷新仍失败才判登录失效；任一账号异常只跳过该账号，**不会中断整轮运行**。
 - **📦 活动下线就归档**：已结束/已下架的限时任务（开学季、校园日）不再常驻主脚本，代码移入 [`archive/`](archive/) 留档，主脚本只保留在跑的任务。
-- **🌙 夜猫子规则对齐**：官方为「每日 1 次 × 累计 3 天」，脚本有响应即停，不会一晚空跑多次。
+- **🌙 夜猫子规则对齐**：官方为「每日 1 次 × 累计 3 天」，脚本有响应即停；若当前任务列表已不下发 `black_cat`，直接提示并跳过，不会硬跑三次夜聊。
 - **🎁 自动补领奖**：按 `progress.current >= progress.target` 扫描，已达标未领的任务会自动补领，不依赖可能延迟或回滚的 `accept_status`。
 - **📱 小程序协议对齐**：公共 base 使用 2.4.0，专家/灵感事件按官方发射点保留 2.2.8；`conversationId` 使用 UUID v4，`requestId` 使用 32 hex 毫秒前缀，不再携带项目缩写前缀。
-- **⏱️ mp 真人节奏 + accept 后回读**：对话判据逐条 45s±10s（对齐上游反作弊实测，避免「先计数后被整体回滚」）；accept 后重读真实 `target`，杜绝「少报 → 误判达标 → claim 400」。
+- **⏱️ mp 真人节奏 + accept 后回读**：对话判据逐条 45s±10s（对齐上游反作弊实测，避免「先计数后被整体回滚」）；accept 后重读真实 `target`，`target<=0` 时有界等待下发，不再按 1 猜测或冒领。
 - **🔁 瞬时错误有界重试**：每日签到 / 余额 / 用量对网络抖动与 5xx 做 2s/4s 退避重试（最多 2 次），业务错误（如「今天已签到」）不重试。
 - **📢 多渠道推送**：PushPlus、Bark、WxPusher、Server酱、企业微信、钉钉和**青龙面板默认通知**，配了哪个推哪个，互不影响。
   企业微信/钉钉只需一个 webhook；青龙用户连 webhook 都不用填——脚本自己从面板拿令牌调通知接口，**新版旧版都兼容**：
@@ -592,13 +604,20 @@ WorkBuddy-Daily/
 available for personal users」（2026-10-07 实测口径）。脚本会**自动识别并跳过**签到与全部
 成长/互动任务，只做令牌续期与查询，不再把这种情况误报成「凭据失效」。
 
-> 企业额度不在个人「资源包」体系内（`get-user-resource*` 对企业号返回空 `Accounts`），请在企业后台查询。
+> 企业额度不在个人「资源包」体系内（`get-user-resource*` 对企业号返回空 `Accounts`），主脚本不查询企业额度。
+>
+> `credits_report.py` 只在 store 条目显式带 `enterpriseId` 时查询
+> `/v2/billing/meter/get-enterprise-user-usage`（404 回退网页无 `/v2` 路径），
+> `limit_num/limitNum = -1` 显示为不限量；企业账号不执行每日签到。
+> 主脚本归一后的账号结构不携带 `enterpriseId`，因此不做 JWT / `token_source`
+> 猜测式企业识别。
 
 ---
 
 ## 📦 版本与发布
 
 - **每次更新单独发一个 Release**：编号 `v1` → `v2` → `v3` …依次递增，**历史版本保留可下载，不覆盖、不合并**（方便回看与回退）
+- **当前脚本版本**：`v3.27`（Release `v27`）
 - Release 标题括号里是**脚本自身的版本号**（如 `v3（脚本 v3.3）`、`v4（脚本 v3.4）`），与文件头、日志里的版本一致
 - 每个 Release 都带完整包 zip、各脚本单文件与 `SHA256SUMS.txt` 校验文件，按需下载即可
 - 下载页：<https://github.com/L0NE-6/WorkBuddy-Daily/releases>；青龙 / Actions 想固定版本就下对应 Release 的资产，想跟最新就用仓库 `main`

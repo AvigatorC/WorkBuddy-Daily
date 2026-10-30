@@ -1,4 +1,5 @@
 import ast
+import base64
 import contextlib
 import hashlib
 import io
@@ -83,6 +84,30 @@ class FakeSession:
 
 
 class CoreBehaviorTests(unittest.TestCase):
+    def test_token_sanity_recognizes_domestic_issuers_without_trusting_lookalikes(self):
+        namespace = load_functions("_jwt_payload_local", "_token_sanity",
+                                   json=json, base64=base64)
+        def token(issuer, kind):
+            payload = base64.urlsafe_b64encode(json.dumps(
+                {"iss": issuer, "typ": kind}, separators=(",", ":")
+            ).encode()).decode().rstrip("=")
+            return "eyJ." + payload + ".signature"
+        sanity = namespace["_token_sanity"]
+        for issuer in ("https://www.codebuddy.cn/auth/realms/copilot",
+                       "https://www.workbuddy.cn/auth/realms/copilot",
+                       "https://copilot.tencent.com/auth/realms/copilot"):
+            with self.subTest(issuer=issuer):
+                self.assertEqual([], sanity(token(issuer, "Offline"), token(issuer, "Bearer")))
+        for issuer in ("https://codebuddy.cn.evil.example/auth/realms/copilot",
+                       "https://www.workbuddy.cn.evil.example/auth/realms/copilot",
+                       "https://copilot.tencent.com.evil.example/auth/realms/copilot",
+                       "https://www.codebuddy.ai/auth/realms/copilot"):
+            with self.subTest(issuer=issuer):
+                self.assertTrue(any("签发域" in tip for tip in
+                                    sanity(token(issuer, "Offline"), "")))
+        self.assertTrue(any("typ=Bearer" in tip for tip in
+                            sanity(token("https://www.workbuddy.cn/auth/realms/copilot", "Bearer"), "")))
+
     def test_claim_ready_prefers_claimable_rows_and_correct_platform(self):
         desktop_tasks = {
             "code": 0,
@@ -376,6 +401,151 @@ class CoreBehaviorTests(unittest.TestCase):
             object(), "uid", "nick", logs.append)
         self.assertEqual([], claimed)
         self.assertIn("进度未点亮", " ".join(logs))
+
+    def test_mp_task_target_zero_waits_without_fake_progress(self):
+        reported = []
+        claimed = []
+        module = load_functions(
+            "_mp_do_task", "_wait_mp_target",
+            _mp_task_row=lambda session, code: {
+                "task_code": code,
+                "accept_status": "accepted",
+                "progress": {"current": 0, "target": 0},
+            },
+            _mp_prog=lambda session, code: ("accepted", 0, 0),
+            _mp_claim=lambda session, code, log:
+                claimed.append(code) or True,
+            mp_report=lambda session, uid, nick, events:
+                reported.append(events) or 200,
+            time=type("Time", (), {
+                "sleep": staticmethod(lambda seconds: None),
+            }),
+            MP_TARGET_WAIT_ROUNDS=2,
+            MP_TARGET_WAIT_SECONDS=0,
+            WRITE_GAP=0,
+            MP_CHAT_GAP=0,
+        )
+        logs = []
+        module["_mp_do_task"](
+            object(), "uid", "nick", "Sequential_Tasks_6", logs.append,
+            lambda index: [{"eventCode": "chat_request_send"}],
+            "小程序对话×10", target=10,
+        )
+        self.assertEqual([], reported)
+        self.assertEqual([], claimed)
+        self.assertIn("不按 1 冒领", " ".join(logs))
+
+    def test_401_refresh_helper_updates_state_once(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store_path = os.path.join(temp_dir, "wb_refresh_tokens.json")
+            refresh_calls = []
+            module = load_functions(
+                "_refresh_account_once",
+                os=os, json=json,
+                time=type("Time", (), {
+                    "strftime": staticmethod(lambda fmt: "2026-10-27 12:00"),
+                }),
+                REFRESH_STORE=store_path,
+                refresh_one=lambda rt, at="": (
+                    refresh_calls.append((rt, at)) or ("new-access", "new-refresh")),
+                jwt_user=lambda token: "user-1",
+                _rebuild_token_file=lambda store: None,
+            )
+            account = {
+                "note": "old-note",
+                "access_token": "old-access",
+                "refresh_token": "old-refresh",
+            }
+            logs = []
+            self.assertTrue(
+                module["_refresh_account_once"](account, logs.append))
+            self.assertEqual("new-access", account["access_token"])
+            self.assertEqual("new-refresh", account["refresh_token"])
+            self.assertEqual("user-1", account["note"])
+            with open(store_path, encoding="utf-8") as handle:
+                store = json.load(handle)
+            self.assertEqual(
+                "new-refresh", store["user-1"]["refresh_token"])
+            self.assertIn("已续期一次", " ".join(logs))
+            self.assertEqual([("old-refresh", "old-access")], refresh_calls)
+
+    def test_refresh_one_sends_cn_header_subset_and_empty_body(self):
+        session = FakeSession([FakeResponse(payload={
+            "code": 0,
+            "data": {"accessToken": "new-at", "refreshToken": "new-rt"},
+        })])
+        requests_module = type("Requests", (), {
+            "Session": staticmethod(lambda: session),
+        })
+        module = load_functions(
+            "refresh_one",
+            requests=requests_module,
+            REFRESH_URL="https://copilot.tencent.com/v2/plugin/auth/token/refresh",
+            REFRESH_DOMAIN="www.workbuddy.cn",
+            uid_of=lambda token: "uid-1",
+            _new_message_id=lambda: "0123456789abcdef0123456789abcdef",
+        )
+        self.assertEqual(("new-at", "new-rt"),
+                         module["refresh_one"]("old-rt", "old-at"))
+        method, url, kwargs = session.calls[0]
+        self.assertEqual("POST", method)
+        self.assertEqual(
+            "https://copilot.tencent.com/v2/plugin/auth/token/refresh", url)
+        self.assertEqual({}, kwargs["json"])
+        self.assertEqual({
+            "X-Refresh-Token": "old-rt",
+            "X-Auth-Refresh-Source": "plugin",
+            "Content-Type": "application/json",
+            "X-Request-ID": "0123456789abcdef0123456789abcdef",
+            "X-Domain": "www.workbuddy.cn",
+            "Authorization": "Bearer old-at",
+            "X-User-Id": "uid-1",
+        }, kwargs["headers"])
+
+    def test_refresh_one_without_at_keeps_legacy_identity_shape(self):
+        session = FakeSession([FakeResponse(payload={
+            "code": 0,
+            "data": {"accessToken": "new-at"},
+        })])
+        requests_module = type("Requests", (), {
+            "Session": staticmethod(lambda: session),
+        })
+        module = load_functions(
+            "refresh_one",
+            requests=requests_module,
+            REFRESH_URL="https://copilot.tencent.com/v2/plugin/auth/token/refresh",
+            REFRESH_DOMAIN="www.workbuddy.cn",
+            uid_of=lambda token: "should-not-be-used",
+            _new_message_id=lambda: "0123456789abcdef0123456789abcdef",
+        )
+        module["refresh_one"]("old-rt")
+        headers = session.calls[0][2]["headers"]
+        self.assertNotIn("Authorization", headers)
+        self.assertNotIn("X-User-Id", headers)
+        self.assertEqual({
+            "X-Refresh-Token",
+            "X-Auth-Refresh-Source",
+            "Content-Type",
+            "X-Request-ID",
+            "X-Domain",
+        }, set(headers))
+
+    def test_black_cat_missing_task_does_not_run_fake_chat_attempts(self):
+        chats = []
+        module = load_functions(
+            "t_black_cat",
+            prog=lambda session, code: (None, None, None),
+            within_night_window=lambda: True,
+            beijing_now=lambda: type("Now", (), {"hour": 23})(),
+            webchat=lambda *args: chats.append(args) or ("conv", "reply"),
+            time=type("Time", (), {
+                "sleep": staticmethod(lambda seconds: None),
+            }),
+        )
+        logs = []
+        module["t_black_cat"](object(), "uid", "nick", logs.append)
+        self.assertEqual([], chats)
+        self.assertIn("未下发 black_cat", " ".join(logs))
 
     def test_claim_ready_is_idempotent_across_scans(self):
         class Session:
@@ -1143,6 +1313,210 @@ class CoreBehaviorTests(unittest.TestCase):
             posted["url"],
         )
         self.assertEqual("标题 第二行", posted["data"]["title"])
+
+    def test_state_dir_env_overrides_default_locations(self):
+        """WORKBUDDY_STATE_DIR 决定令牌库/AT文本/补偿防重的落点；不设则回退脚本目录。"""
+        # _state_dir() 依赖模块的 __file__，这里用完整模块命名空间执行，
+        # 不能用 load_functions 只抽函数体（那样 __file__ 不存在）。
+        namespace = {"__builtins__": __builtins__, "__file__": str(SOURCE_PATH),
+                     "__name__": "wb_state_dir_probe", "os": os}
+        module_node = ast.Module(body=[FUNCTIONS["_state_dir"]], type_ignores=[])
+        exec(compile(module_node, str(SOURCE_PATH), "exec"), namespace)
+        state_dir = namespace["_state_dir"]
+
+        previous = os.environ.pop("WORKBUDDY_STATE_DIR", None)
+        try:
+            default_dir = state_dir()
+            self.assertEqual(str(SOURCE_PATH.parent), default_dir)
+
+            with tempfile.TemporaryDirectory() as temp_dir:
+                custom = os.path.join(temp_dir, "state")
+                os.environ["WORKBUDDY_STATE_DIR"] = custom
+                self.assertEqual(custom, state_dir())
+                # 目录不存在时应自动创建，否则写入阶段会失败
+                self.assertTrue(os.path.isdir(custom))
+
+                # 空白值视同未设置，不能变成空目录名
+                os.environ["WORKBUDDY_STATE_DIR"] = "   "
+                self.assertEqual(str(SOURCE_PATH.parent), state_dir())
+        finally:
+            os.environ.pop("WORKBUDDY_STATE_DIR", None)
+            if previous is not None:
+                os.environ["WORKBUDDY_STATE_DIR"] = previous
+
+    def test_state_files_follow_state_dir(self):
+        """三个状态常量必须都跟着 WORKBUDDY_STATE_DIR 走，不能漏一个。"""
+        for name in ("REFRESH_STORE", "TOKEN_FILE", "BENEFIT_STATE_FILE"):
+            for node in TREE.body:
+                if not isinstance(node, ast.Assign):
+                    continue
+                if not any(isinstance(t, ast.Name) and t.id == name
+                           for t in node.targets):
+                    continue
+                source = ast.get_source_segment(SOURCE, node.value) or ""
+                self.assertIn("STATE_DIR", source,
+                              "%s 未使用 STATE_DIR：%s" % (name, source))
+                break
+            else:
+                self.fail("未找到状态常量 %s" % name)
+
+
+    def test_notify_policy_fail_is_default(self):
+        """呆呆面板定制：不设 WORKBUDDY_NOTIFY 时默认 fail（Server酱 免费版每天仅 5 条）。"""
+        sent = []
+        module = load_functions(
+            "_notify_or_skip", "_notify_ok",
+            os=os, print=lambda *a, **k: None,
+            send_notify_all=lambda t, c: sent.append(t),
+            build_summary=lambda s: "summary",
+        )
+        previous = os.environ.pop("WORKBUDDY_NOTIFY", None)
+        try:
+            module["_notify_or_skip"]([{"idx": 1, "checked_in": True}])
+            self.assertEqual(0, len(sent))
+            module["_notify_or_skip"]([{"idx": 1, "checked_in": False}])
+            self.assertEqual(1, len(sent))
+        finally:
+            os.environ.pop("WORKBUDDY_NOTIFY", None)
+            if previous is not None:
+                os.environ["WORKBUDDY_NOTIFY"] = previous
+
+    def test_notify_policy_fail_only_pushes_on_trouble(self):
+        """fail 策略：全部签到成功则不推；任一账号未确认或异常中断则推。"""
+        sent = []
+        module = load_functions(
+            "_notify_or_skip", "_notify_ok",
+            os=os, print=lambda *a, **k: None,
+            send_notify_all=lambda t, c: sent.append(t),
+            build_summary=lambda s: "summary",
+        )
+        try:
+            os.environ["WORKBUDDY_NOTIFY"] = "fail"
+            # 全部成功 -> 静默
+            module["_notify_or_skip"]([{"idx": 1, "checked_in": True},
+                                       {"idx": 2, "checked_in": True}])
+            self.assertEqual([], sent)
+            # 有账号签到未确认 -> 推
+            module["_notify_or_skip"]([{"idx": 1, "checked_in": True},
+                                       {"idx": 2, "checked_in": False}])
+            self.assertEqual(1, len(sent))
+            # 账号异常中断（summary 无 checked_in 字段）-> 也要推
+            module["_notify_or_skip"]([{"idx": 1, "checked_in": True},
+                                       {"idx": 2, "done": 0, "rest": ["异常中断"]}])
+            self.assertEqual(2, len(sent))
+        finally:
+            os.environ.pop("WORKBUDDY_NOTIFY", None)
+
+    def test_notify_policy_zero_disables_push(self):
+        """WORKBUDDY_NOTIFY=0 时完全不推，即使有异常。"""
+        sent = []
+        module = load_functions(
+            "_notify_or_skip", "_notify_ok",
+            os=os, print=lambda *a, **k: None,
+            send_notify_all=lambda t, c: sent.append(t),
+            build_summary=lambda s: "summary",
+        )
+        try:
+            for value in ("0", "off", "none", "false"):
+                os.environ["WORKBUDDY_NOTIFY"] = value
+                module["_notify_or_skip"]([{"idx": 1, "checked_in": False}])
+            self.assertEqual([], sent)
+        finally:
+            os.environ.pop("WORKBUDDY_NOTIFY", None)
+
+    def test_sign_reports_checked_in_through_status_out(self):
+        """t_sign 的成功分支必须回传 checked_in，供推送策略判断。"""
+        class Response:
+            status_code = 200
+
+            def __init__(self, payload):
+                self.payload = payload
+
+            def json(self):
+                return self.payload
+
+        class Session:
+            def post(self, url, **kwargs):
+                return Response({"code": 0, "data": {"today_checked_in": True}})
+
+        module = load_functions(
+            "t_sign",
+            BASE="https://example.test",
+            api_retry=lambda s, method, url, **kw: s.post(url),
+            is_enterprise_denial=lambda code, payload: False,
+            _api_code_ok=lambda code: True,
+            _checkin_tail=lambda s: "",
+            t_daily_activity=lambda *a: None,
+            _checkin_status=lambda s: {"today_checked_in": True},
+        )
+        state = {}
+        with contextlib.redirect_stdout(io.StringIO()):
+            module["t_sign"](Session(), "uid", "nick", lambda m: None, state)
+        self.assertTrue(state.get("checked_in"))
+
+
+class TaskDispatchGuardTests(unittest.TestCase):
+    """prog() 对未下发任务返回 (None, None, None)：不能当成「未完成」继续发真实请求。
+
+    issue #39：Model_chat_GLM5.2 / create_canvas / Buddy_App_QQ 已不再下发，
+    旧判断 `st not in ("completed", "claimed")` 对 None 恒为真，导致每轮白扣积分。
+    """
+
+    def test_chat_task_skips_when_not_dispatched(self):
+        webchats = []
+        logs = []
+        module = load_functions(
+            "t_chat_n", time=time,
+            prog=lambda s, code: (None, None, None),
+            webchat=lambda *a, **k: webchats.append(a) or ("cid", "txt"),
+            chat_request_events=lambda *a, **k: ([], None),
+            report=lambda *a, **k: None,
+        )
+        module["t_chat_n"](object(), "uid", "nick", logs.append,
+                           "Model_chat_GLM5.2", 1, ["你好"])
+        self.assertEqual([], webchats)
+        self.assertTrue(any("未下发" in line for line in logs))
+
+    def test_chat_task_still_runs_when_dispatched(self):
+        webchats = []
+        module = load_functions(
+            "t_chat_n", time=time,
+            prog=lambda s, code: ("", 0, 3),
+            webchat=lambda *a, **k: webchats.append(a) or ("cid", "txt"),
+            chat_request_events=lambda *a, **k: ([], None),
+            report=lambda *a, **k: None,
+        )
+        module["t_chat_n"](object(), "uid", "nick", lambda m: None, "chat_5", 1, ["你好"])
+        self.assertEqual(1, len(webchats))
+
+    def test_canvas_tasks_skip_when_not_dispatched(self):
+        desktops, reports = [], []
+        logs = []
+        module = load_functions(
+            "t_canvas_automation", time=time,
+            prog=lambda s, code: (None, None, None),
+            _desktop_run=lambda *a, **k: desktops.append(a) or True,
+            report=lambda *a, **k: reports.append(a),
+            PLAYBOOK_CASE={"id": "x", "name": "n", "type": "t"},
+            uuid=uuid,
+        )
+        module["t_canvas_automation"](object(), "uid", "nick", logs.append)
+        self.assertEqual([], desktops)
+        self.assertEqual([], reports)
+        self.assertEqual(3, len([line for line in logs if "未下发" in line]))
+
+    def test_buddy_apps_skip_when_not_dispatched(self):
+        sequences, reports = [], []
+        module = load_functions(
+            "t_buddy_apps", time=time,
+            prog=lambda s, code: (None, None, None),
+            desktop_buddy5_sequence=lambda *a, **k: sequences.append(a) or [],
+            report_desktop_events=lambda *a, **k: reports.append(a),
+            QQ_TPL="qq-tpl", WRITE_GAP=0,
+        )
+        module["t_buddy_apps"](object(), "uid", "nick", lambda m: None)
+        self.assertEqual([], sequences)
+        self.assertEqual([], reports)
 
 
 if __name__ == "__main__":

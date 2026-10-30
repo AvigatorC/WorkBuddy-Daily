@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🌱 WorkBuddy Daily - 全能签到脚本 v3.25
+🌱 WorkBuddy Daily - 全能签到脚本 v3.28（呆呆面板定制）
 ════════════════════════════════════════════════════════════════
 
 📌 这是什么
@@ -487,6 +487,9 @@ INFO_BACKUP = os.path.join(os.path.expanduser("~"), "AppData", "Local", "CodeBud
 # ---------- 账号 ----------
 # ---------- Token 自动续期（内联实现，无需外部文件） ----------
 REFRESH_URL = "https://copilot.tencent.com/v2/plugin/auth/token/refresh"
+REFRESH_DOMAIN = "www.workbuddy.cn"
+
+
 def _state_dir():
     """状态文件目录：`WORKBUDDY_STATE_DIR` 优先，未设置时用脚本同级目录（原行为）。
 
@@ -645,7 +648,8 @@ def _token_sanity(rt, at):
             tips.append("AT 的 typ=%s（应为 Bearer）——AT/RT 可能写反了" % typ)
         if iss and iss not in (
                 "https://www.codebuddy.cn/auth/realms/copilot",
-                "https://www.workbuddy.cn/auth/realms/copilot"):
+                "https://www.workbuddy.cn/auth/realms/copilot",
+                "https://copilot.tencent.com/auth/realms/copilot"):
             tips.append("%s 的签发域是 %s，不在已知的国内 WorkBuddy 签发域中，请核对凭据来源" % (name, iss[:70]))
     return tips
 
@@ -658,12 +662,28 @@ def jwt_user(tok):
         return "?"
 
 
-def refresh_one(rt):
-    """刷新单个RT，返回 (新AT, 新RT) 或 (None, 错误信息)"""
+def refresh_one(rt, at=""):
+    """刷新单个 RT，返回 (新 AT, 新 RT) 或 (None, 错误信息)。
+
+    CN 刷新端点同时要求当前 AT 与账号身份头；AT/uid 缺失时只保留
+    旧的 RT 刷新形态，不伪造身份。
+    """
+    headers = {
+        "X-Refresh-Token": rt,
+        "X-Auth-Refresh-Source": "plugin",
+        "Content-Type": "application/json",
+        "X-Request-ID": _new_message_id(),
+        "X-Domain": REFRESH_DOMAIN,
+    }
+    at = str(at or "").strip()
+    if at:
+        headers["Authorization"] = "Bearer " + at
+        uid = str(uid_of(at) or "").strip()
+        if uid:
+            headers["X-User-Id"] = uid
     s = requests.Session(); s.trust_env = False
     r = s.post(REFRESH_URL, json={}, timeout=20, verify=False,
-               headers={"X-Refresh-Token": rt, "X-Auth-Refresh-Source": "plugin",
-                        "Content-Type": "application/json"})
+               headers=headers)
     d = r.json()
     inner = d.get("data") or {}
     if d.get("code") == 0 and inner.get("accessToken"):
@@ -685,7 +705,7 @@ def refresh_all(verbose=True):
         if not rt:
             continue
         try:
-            at, nrt = refresh_one(rt)
+            at, nrt = refresh_one(rt, ent.get("access_token", ""))
         except Exception as e:
             at, nrt = None, str(e)[:60]
         if at:
@@ -800,7 +820,8 @@ def auto_refresh():
             for t in tips[:3]:
                 print("      · %s" % t)
         try:
-            at, nrt = refresh_one(ent.get("refresh_token", ""))
+            at, nrt = refresh_one(ent.get("refresh_token", ""),
+                                  ent.get("access_token", ""))
         except Exception:
             at, nrt = None, "err"
         if at:
@@ -830,7 +851,8 @@ def _refresh_account_once(acc, log):
         log("  ❌ 401 后需要续期，但该账号没有 RT，无法自动恢复")
         return False
     try:
-        access_token, next_refresh = refresh_one(refresh_token)
+        access_token, next_refresh = refresh_one(
+            refresh_token, acc.get("access_token", ""))
     except Exception as exc:
         log("  ❌ 401 后自动续期异常: %s" % str(exc)[:80])
         return False
@@ -1083,17 +1105,6 @@ def prog(s, code):
     except Exception:
         pass
     return None, None, None
-
-
-def _needs_do(s, code):
-    """任务是否真的还需要做：只有「明确存在于列表且未完成」才返回 True。
-
-    关键点：`prog()` 读不到任务时返回 st=None。若把它当成「未完成」继续执行，
-    轻则白发一轮上报，重则真发对话、真扣积分（实测 Model_chat_GLM5.2 已下架，
-    每次仍跑一次 GLM-5.2 对话）。所以 None 一律视为「不要做」。
-    """
-    st, cur, tgt = prog(s, code)
-    return st is not None and st not in ("completed", "claimed")
 
 
 def _growth_task_rows(s, headers=None, path="/v2/activity/growth/tasks"):
@@ -1734,8 +1745,8 @@ def t_sign(s, uid, nick, log, status_out=None):
     先查活动状态，确认在活动期且今天未签才 POST。daily-checkin 对瞬时错误
     （网络/5xx）有界重试，但空 200、业务失败或没有 credit 的响应不再写成成功。
 
-    `status_out` 是调用方传入的 dict，用于回传签到结论，供进程退出码判定：
-      checked_in   True=今天确实已签（含幂等命中）
+    `status_out` 是调用方传入的 dict，用于回传签到结论，供退出码与通知策略判定：
+      checked_in   True=今天确实已签（含幂等命中「今天已签到」）
     """
     try:
         status_response = api_retry(
@@ -1936,6 +1947,10 @@ def t_buddy_apps(s, uid, nick, log):
     """发现应用/企鹅教师助手：desktop_buddy5_sequence + report_desktop_events"""
     for task in ("Buddy_App", "Buddy_App_QQ"):
         st, cur, tgt = prog(s, task)
+        if st is None:
+            # 未下发（如 Buddy_App_QQ 已下线）→ 不发 buddyapp 五连
+            log("   %s: 当前任务列表未下发（可能已下线），跳过" % task)
+            continue
         if st in ("completed", "claimed"):
             continue
         buddy_id = QQ_TPL if "QQ" in task else "buddy-app-default"
@@ -2009,17 +2024,13 @@ def t_library(s, uid, nick, log):
 
 
 def t_chat_n(s, uid, nick, log, code, n, prompts):
-    """通用聊天任务: chat_5 / Model_chat_GLM5.2
-
-    ⚠️ 上游会随时下架任务。`prog()` 读不到时返回 st=None，若此时仍发对话，
-    会真实调用模型、真实扣积分（实测 Model_chat_GLM5.2 已下架）。
-    """
-    st, cur, tgt = prog(s, code)
-    if st is None:
-        log("   %s: 不在当前任务列表（已下架/改名），跳过，不发对话" % code)
-        return
+    """通用聊天任务: chat_5 / Model_chat_GLM5.2"""
     for i in range(n):
         st, cur, tgt = prog(s, code)
+        if st is None:
+            # 任务未下发（已下线/未开放）：继续发真实对话只会白扣积分
+            log("   %s: 当前任务列表未下发（可能已下线），跳过" % code)
+            return
         if st in ("completed", "claimed") or (cur or 0) >= (tgt or n):
             break
         conv_id, txt = webchat(s, code, prompts[i % len(prompts)])
@@ -2156,7 +2167,10 @@ def t_canvas_automation(s, uid, nick, log):
     为 wbx_design_canvas_task_create(+open) 与 playbook_cta_click/playbook_prompt_send 挂在真实
     conversationId/requestId 上；未点亮时回落旧的 web 域裸事件。自动化任务用真实 rrule 对象形状。
     """
-    if prog(s, "create_canvas")[0] not in ("completed", "claimed"):
+    canvas_st = prog(s, "create_canvas")[0]
+    if canvas_st is None:
+        log("   设计创意画布: 当前任务列表未下发（可能已下线），跳过")
+    elif canvas_st not in ("completed", "claimed"):
         def _canvas_evs(cid, mid):
             return [{"eventCode": "wbx_design_canvas_task_create", "conversationId": cid, "requestId": mid,
                      "source": "summon_keyword", "isCustomModel": False, "name": "", "inputLength": 12,
@@ -2171,7 +2185,9 @@ def t_canvas_automation(s, uid, nick, log):
                                   {"eventCode": "wbx_design_canvas_task_create"}])
             time.sleep(3)
     st, cur, tgt = prog(s, "automation_1")
-    if st not in ("completed", "claimed"):
+    if st is None:
+        log("   自动化任务: 当前任务列表未下发（可能已下线），跳过")
+    elif st not in ("completed", "claimed"):
         report(s, uid, nick, [{"eventCode": "agent_task_created", "source": "CLOUD", "name": "", "mode": "craft",
                                "requestModelId": "default", "task_mode": "automation",
                                "isAutomationBackground": True},
@@ -2187,7 +2203,10 @@ def t_canvas_automation(s, uid, nick, log):
                                "prompt": "每周五自动整理本周工作，生成一份周报。"},
                               {"eventCode": "automated_task_execute", "action": "execute"}])
         time.sleep(3)
-    if prog(s, "playbook_prompt")[0] not in ("completed", "claimed"):
+    playbook_st = prog(s, "playbook_prompt")[0]
+    if playbook_st is None:
+        log("   优秀灵感: 当前任务列表未下发（可能已下线），跳过")
+    elif playbook_st not in ("completed", "claimed"):
         def _pb_evs(cid, mid):
             payload = {"id": PLAYBOOK_CASE["id"], "name": PLAYBOOK_CASE["name"],
                        "type": PLAYBOOK_CASE["type"], "categoryId": "", "categoryName": ""}
@@ -4388,9 +4407,14 @@ def run_account(idx, acc, do_desktop):
     except Exception as e:
         log("   ⚠️领奖预扫异常: %s" % str(e)[:80])
     # 桌面任务先做（新账号必须先有真实桌面会话，否则接受会被回滚、遥测不计数）
-    need_rich = prog(s, "RichMeow_Chat")[0] not in ("completed", "claimed")
-    need_skill = prog(s, "skill_1")[0] not in ("completed", "claimed")
+    rich_st = prog(s, "RichMeow_Chat")[0]
+    skill_st = prog(s, "skill_1")[0]
+    # 未下发（None）＝该任务当前不可做：不能当「未完成」去跑桌面对话，否则白扣积分
+    need_rich = rich_st is not None and rich_st not in ("completed", "claimed")
+    need_skill = skill_st is not None and skill_st not in ("completed", "claimed")
     desktop_skipped = False
+    if rich_st is None or skill_st is None:
+        log("  🖥️ 桌面任务: 有任务未下发（RichMeow=%s skill_1=%s），未下发项不执行" % (rich_st, skill_st))
     if (need_rich or need_skill) and not want("desktop", "RichMeow_Chat", "skill_1"):
         log("  🖥️ 桌面任务: 按配置跳过（desktop）")
         need_rich = need_skill = False
@@ -4500,7 +4524,7 @@ def run_account(idx, acc, do_desktop):
                                        verify=False)).get("data") or {})
     summary.update({"done": done, "total": len(st_all), "rest": rest,
                     "level": prof2.get("level", "?"), "energy": energy})
-    # 签到结论（供进程退出码判定；未执行/未确认一律 False）
+    # 签到结论（供退出码与 WORKBUDDY_NOTIFY 判定；未执行/未确认一律 False）
     summary["checked_in"] = bool(_checkin_state.get("checked_in"))
     summary["checkin_skipped"] = bool(summary.get("enterprise") or _checkin_state.get("skipped"))
     log("🏁 %s: 完成%s/%s 等级%s 剩余: %s" % (mask_phone(acc.get("note", "")), done, len(st_all), prof2.get("level", "?"),
@@ -4895,33 +4919,53 @@ def main():
             all_msgs.extend(msgs_part)
             summaries.append(sm)
             time.sleep(2)
-    # ---- 退出码与推送 ----
-    # ⚠️ Server酱 免费版每天只有 5 条额度，所以**成功必须静默**。
-    # WORKBUDDY_NOTIFY 取值：fail（默认，仅失败推）/ always（调试用）/ 0（关闭）
+    # 推送摘要（完整日志见青龙日志/控制台）
     if QUERY_ONLY:
+        # 只查不做的模式不该推送，也不该被面板判失败
         return 0
-    failed_accounts = []
+    _notify_or_skip(summaries)
+    return _exit_code(summaries)
+
+
+def _notify_ok(summaries):
+    """本轮是否「一切正常」。
+
+    判据只看签到结论：成功分支（含幂等命中「今天已签到」）会写 checked_in=True。
+    账号级异常中断（run_account 抛错）也视为不正常——那种 summary 没有
+    checked_in 字段，自然落到 False。
+    """
+    if not summaries:
+        return False
+    return all(bool(sm.get("checked_in")) for sm in summaries)
+
+
+def _notify_or_skip(summaries):
+    """按 WORKBUDDY_NOTIFY 策略决定是否推送。
+
+    fail（默认，省 Server酱 额度）  仅本轮不「一切正常」时推
+    always                          每次运行都推（调试用）
+    0 / off / none                  完全不推
+    """
+    mode = (os.environ.get("WORKBUDDY_NOTIFY") or "fail").strip().lower()
+    if mode in ("0", "off", "no", "false", "none"):
+        return
+    if mode == "fail" and _notify_ok(summaries):
+        print("ℹ️ 本轮无异常，按 WORKBUDDY_NOTIFY=fail 跳过推送")
+        return
+    send_notify_all("🌱 WorkBuddy 签到报告", build_summary(summaries))
+
+
+def _exit_code(summaries):
+    """面板按退出码判定任务成败：有账号签到未确认 → 1。
+
+    企业版 / 用户用白名单显式跳过签到的账号不算失败，否则每天都会误报。
+    """
     for sm in summaries:
         if sm.get("checked_in"):
             continue
-        # 企业版/无个人成长体系：上游本就不支持签到，不算失败
         if sm.get("checkin_skipped") or sm.get("enterprise"):
             continue
-        failed_accounts.append(sm.get("idx"))
-
-    notify_mode = (os.environ.get("WORKBUDDY_NOTIFY") or "fail").strip().lower()
-    if notify_mode != "0":
-        if failed_accounts:
-            print("")
-            print("❌ 签到未成功确认的账号: %s（详见上方各账号输出）"
-                  % "、".join("账号%d" % i for i in failed_accounts))
-            send_notify_all("❌ WorkBuddy 签到失败", build_summary(summaries))
-        elif notify_mode == "always":
-            send_notify_all("🌱 WorkBuddy 签到报告", build_summary(summaries))
-        else:
-            print("ℹ️ 签到正常，静默不推送（节省 Server酱 额度）")
-
-    if failed_accounts:
+        print("❌ 签到未成功确认: 账号%s（详见上方输出）" % sm.get("idx"))
         print("   退出码 1 —— 调度器会据此判定本次任务失败并告警")
         return 1
     return 0
