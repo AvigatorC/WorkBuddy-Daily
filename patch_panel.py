@@ -8,9 +8,10 @@
 还在。历史上正是「插入 helper 但调用点没跟上」导致画布对话空跑扣费，这里改成
 「不碰守卫，只校验」。
 
-上游不含、必须重新应用的定制只有两条：
+上游不含、必须重新应用的定制：
   1. 通知策略  WORKBUDDY_NOTIFY 默认 fail（Server酱 免费版每天仅 5 条）
-  2. 退出码    main() 返回 0/1，签到失败时让面板判定任务失败并告警
+  2. 通知语义  企业版 / 白名单跳过签到不算「异常」，失败用 ❌ 标题区分
+  3. 退出码    main() 返回 0/1，签到失败时让面板判定任务失败并告警
 
 用法：
     python patch_panel.py <上游脚本> <输出文件> [上游测试文件 <测试输出文件>]
@@ -58,7 +59,7 @@ if n != 1:
     raise SystemExit("补丁失败 [0-header]：版本行未命中")
 applied.append("0-header")
 
-# ------------------------------------------------- 1 通知策略：默认 fail
+# ------------------------------------------------- 1 通知策略文档：默认 fail
 text = sub(
     '   WORKBUDDY_NOTIFY          【可选】推送策略，默认 always（每次运行都推，与原行为一致）\n'
     '                             always → 每次都推\n'
@@ -70,37 +71,56 @@ text = sub(
     '                              0          → 完全关闭\n',
     "1-doc-notify", text)
 
+# ------------------------------------------------- 2a 异常判据：跳过签到的账号不算失败
 text = sub(
-    '    """按 WORKBUDDY_NOTIFY 策略决定是否推送。\n'
-    '\n'
+    '    if not summaries:\n'
+    '        return False\n'
+    '    return all(bool(sm.get("checked_in")) for sm in summaries)\n',
+    '    if not summaries:\n'
+    '        return False\n'
+    '    for sm in summaries:\n'
+    '        if sm.get("checked_in"):\n'
+    '            continue\n'
+    '        if sm.get("checkin_skipped") or sm.get("enterprise"):\n'
+    '            continue\n'
+    '        return False\n'
+    '    return True\n',
+    "2a-notify-ok", text)
+
+text = sub(
+    '    判据只看签到结论：成功分支（含幂等命中「今天已签到」）会写 checked_in=True。\n'
+    '    账号级异常中断（run_account 抛错）也视为不正常——那种 summary 没有\n'
+    '    checked_in 字段，自然落到 False。\n',
+    '    判据只看签到结论：成功分支（含幂等命中「今天已签到」）会写 checked_in=True。\n'
+    '    企业版（上游本就不支持签到）和用户用白名单显式跳过签到的账号不算失败；\n'
+    '    账号级异常中断（run_account 抛错）没有 checked_in 字段，自然落到 False。\n',
+    "2a2-notify-ok-doc", text)
+
+# ------------------------------------------------- 2b 默认策略 fail + 失败标题 + 退出码函数
+text = sub(
     '    always（默认，保持原行为）  每次运行都推\n'
     '    fail                        仅本轮不「一切正常」时推\n'
     '    0 / off / none              完全不推\n'
     '    """\n'
     '    mode = (os.environ.get("WORKBUDDY_NOTIFY") or "always").strip().lower()\n',
-    '    """按 WORKBUDDY_NOTIFY 策略决定是否推送。\n'
-    '\n'
     '    fail（默认，省 Server酱 额度）  仅本轮不「一切正常」时推\n'
     '    always                          每次运行都推（调试用）\n'
     '    0 / off / none                  完全不推\n'
     '    """\n'
     '    mode = (os.environ.get("WORKBUDDY_NOTIFY") or "fail").strip().lower()\n',
-    "2-notify-default-fail", text)
-
-# ------------------------------------------------- 2 退出码：main() 返回 0/1
-text = sub(
-    '    # 推送摘要（完整日志见青龙日志/控制台）\n'
-    '    _notify_or_skip(summaries)\n',    '    # 推送摘要（完整日志见青龙日志/控制台）\n'
-    '    if QUERY_ONLY:\n'
-    '        # 只查不做的模式不该推送，也不该被面板判失败\n'
-    '        return 0\n'
-    '    _notify_or_skip(summaries)\n'
-    '    return _exit_code(summaries)\n',
-    "3-main-exit-code-call", text)
+    "2b-notify-default-fail", text)
 
 text = sub(
+    '    if mode == "fail" and _notify_ok(summaries):\n'
+    '        print("ℹ️ 本轮无异常，按 WORKBUDDY_NOTIFY=fail 跳过推送")\n'
+    '        return\n'
     '    send_notify_all("🌱 WorkBuddy 签到报告", build_summary(summaries))\n',
-    '    send_notify_all("🌱 WorkBuddy 签到报告", build_summary(summaries))\n'
+    '    ok = _notify_ok(summaries)\n'
+    '    if mode == "fail" and ok:\n'
+    '        print("ℹ️ 本轮无异常，按 WORKBUDDY_NOTIFY=fail 跳过推送")\n'
+    '        return\n'
+    '    send_notify_all("🌱 WorkBuddy 签到报告" if ok else "❌ WorkBuddy 签到失败",\n'
+    '                    build_summary(summaries))\n'
     '\n'
     '\n'
     'def _exit_code(summaries):\n'
@@ -117,20 +137,32 @@ text = sub(
     '        print("   退出码 1 —— 调度器会据此判定本次任务失败并告警")\n'
     '        return 1\n'
     '    return 0\n',
-    "4-exit-code-func", text)
+    "2c-notify-title-and-exit-code", text)
+
+# ------------------------------------------------- 3 main() 返回退出码
+text = sub(
+    '    # 推送摘要（完整日志见青龙日志/控制台）\n'
+    '    _notify_or_skip(summaries)\n',
+    '    # 推送摘要（完整日志见青龙日志/控制台）\n'
+    '    if QUERY_ONLY:\n'
+    '        # 只查不做的模式不该推送，也不该被面板判失败\n'
+    '        return 0\n'
+    '    _notify_or_skip(summaries)\n'
+    '    return _exit_code(summaries)\n',
+    "3-main-exit-code-call", text)
 
 text = sub(
     'if __name__ == "__main__":\n'
     '    main()\n',
     'if __name__ == "__main__":\n'
     '    sys.exit(main())\n',
-    "5-entry-sys-exit", text)
+    "4-entry-sys-exit", text)
 
-# ------------------------------------------------- 2b 签到结论回传（退出码依赖）
+# ------------------------------------------------- 5 签到结论回传（退出码依赖）
 text = sub(
     '    `status_out` 为调用方传入的 dict，用于回传签到结论供通知策略判断：\n',
     '    `status_out` 是调用方传入的 dict，用于回传签到结论，供退出码与通知策略判定：\n',
-    "2b-status-doc", text)
+    "5a-status-doc", text)
 
 text = sub(
     '    _checkin_state = {}\n'
@@ -143,7 +175,7 @@ text = sub(
     '        # 这是他自己的选择，不应被判为失败（否则每天都会误报退出码 1）。\n'
     '        log("   ⏭️ 每日签到: 按配置跳过（不在本次任务白名单内）")\n'
     '        _checkin_state["skipped"] = True\n',
-    "2c-checkin-wiring", text)
+    "5b-checkin-wiring", text)
 
 text = sub(
     '    # 签到结论：供 WORKBUDDY_NOTIFY 判断本轮是否「正常」\n'
@@ -151,9 +183,9 @@ text = sub(
     '    # 签到结论（供退出码与 WORKBUDDY_NOTIFY 判定；未执行/未确认一律 False）\n'
     '    summary["checked_in"] = bool(_checkin_state.get("checked_in"))\n'
     '    summary["checkin_skipped"] = bool(summary.get("enterprise") or _checkin_state.get("skipped"))\n',
-    "2d-summary-checkin-skipped", text)
+    "5c-summary-checkin-skipped", text)
 
-# ------------------------------------------------- 3 守卫必须还在（不插入，只校验）
+# ------------------------------------------------- 6 守卫必须还在（不插入，只校验）
 GUARD_ANCHORS = (
     ("t_chat_n 未下发守卫", 'if st is None:\n            # 任务未下发'),
     ("create_canvas 未下发守卫", "canvas_st is None"),
@@ -178,7 +210,7 @@ applied.append("6-verify-guards")
 
 _write(DST, text, had_crlf)
 
-# ------------------------------------------------- 4 测试里的默认策略断言
+# ------------------------------------------------- 7 测试里的默认策略断言
 if TEST_SRC and TEST_DST:
     ttext, t_crlf = _read(TEST_SRC)
     ttext = sub(

@@ -41,7 +41,9 @@ json.dump({"13800000000": {"refresh_token": _FAKE_JWT, "access_token": _FAKE_JWT
 shutil.copy(TARGET, os.path.join(_SCRIPTS, "workbuddy_daily.py"))
 
 os.environ.pop("WORKBUDDY_REFRESH_TOKEN", None)
-os.environ.pop("WORKBUDDY_STATE_DIR", None)
+# 上游 v3.23 起状态目录只认 WORKBUDDY_STATE_DIR（不再按 __file__ 推导 data/），
+# 所以这里显式指向假的 data/，与面板的 env_vars 一致。
+os.environ["WORKBUDDY_STATE_DIR"] = _DATA
 sys.path.insert(0, _SCRIPTS)
 
 import importlib.util

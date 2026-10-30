@@ -4931,12 +4931,18 @@ def _notify_ok(summaries):
     """本轮是否「一切正常」。
 
     判据只看签到结论：成功分支（含幂等命中「今天已签到」）会写 checked_in=True。
-    账号级异常中断（run_account 抛错）也视为不正常——那种 summary 没有
-    checked_in 字段，自然落到 False。
+    企业版（上游本就不支持签到）和用户用白名单显式跳过签到的账号不算失败；
+    账号级异常中断（run_account 抛错）没有 checked_in 字段，自然落到 False。
     """
     if not summaries:
         return False
-    return all(bool(sm.get("checked_in")) for sm in summaries)
+    for sm in summaries:
+        if sm.get("checked_in"):
+            continue
+        if sm.get("checkin_skipped") or sm.get("enterprise"):
+            continue
+        return False
+    return True
 
 
 def _notify_or_skip(summaries):
@@ -4949,10 +4955,12 @@ def _notify_or_skip(summaries):
     mode = (os.environ.get("WORKBUDDY_NOTIFY") or "fail").strip().lower()
     if mode in ("0", "off", "no", "false", "none"):
         return
-    if mode == "fail" and _notify_ok(summaries):
+    ok = _notify_ok(summaries)
+    if mode == "fail" and ok:
         print("ℹ️ 本轮无异常，按 WORKBUDDY_NOTIFY=fail 跳过推送")
         return
-    send_notify_all("🌱 WorkBuddy 签到报告", build_summary(summaries))
+    send_notify_all("🌱 WorkBuddy 签到报告" if ok else "❌ WorkBuddy 签到失败",
+                    build_summary(summaries))
 
 
 def _exit_code(summaries):

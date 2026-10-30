@@ -44,7 +44,10 @@ check("没有裸 prog() 闸门（None 恒真）", not bare_gates, "; ".join(bare
 # ---- 2. 面板定制：通知策略 ----
 check("WORKBUDDY_NOTIFY 文档存在", "WORKBUDDY_NOTIFY" in SOURCE)
 check("推送默认 fail", 'or "fail").strip().lower()' in SOURCE)
-check("fail 策略仍然静默成功轮", 'if mode == "fail" and _notify_ok(summaries):' in SOURCE)
+check("fail 策略仍然静默成功轮", 'if mode == "fail" and ok:' in SOURCE)
+check("失败用 ❌ 标题区分", '"❌ WorkBuddy 签到失败"' in SOURCE)
+check("跳过签到的账号不算异常",
+      'if sm.get("checkin_skipped") or sm.get("enterprise"):' in SOURCE)
 
 # ---- 3. 面板定制：退出码 ----
 check("存在 _exit_code", "def _exit_code(summaries):" in SOURCE)
