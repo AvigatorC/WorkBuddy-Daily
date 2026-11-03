@@ -1,22 +1,55 @@
 <div align="center">
 
+<sub><strong>L0NE-6 · DAILY SIGNAL</strong></sub>
+
 # 🌱 WorkBuddy Daily
 
 **WorkBuddy 成长中心 · 全能签到脚本 · 单文件自包含（含国际版每日活跃）**
 
+[简体中文](README.md) · [English](docs/README.en.md) · [繁體中文](docs/README.zh-Hant.md) · [日本語](docs/README.ja.md) · [한국어](docs/README.ko.md) · [Português (BR)](docs/README.pt-BR.md)
+
 🔐 Token 永续 · ✅ 38 项自动化 · 📱 小程序链式任务 · 🖥️ 桌面换血 · 🎮 8 项玩法 · 💰 三类查询 · 🎁 自动领奖 · 📊 全中文报告 · 📢 多渠道推送 · 🐧 青龙友好 · ☁️ GitHub Actions
 
+<img src="https://img.shields.io/github/v/release/L0NE-6/WorkBuddy-Daily?style=for-the-badge&label=Release&color=2ea44f&logo=github" />
+<img src="https://img.shields.io/github/stars/L0NE-6/WorkBuddy-Daily?style=for-the-badge&label=Stars&color=FFC75F&logo=github" />
 <img src="https://img.shields.io/badge/Python-3.8+-3776AB?style=for-the-badge&logo=python&logoColor=white" />
 <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20%E9%9D%92%E9%BE%99-4EAA25?style=for-the-badge&logo=linux&logoColor=white" />
 <img src="https://img.shields.io/badge/Deploy-%E9%9D%92%E9%BE%99%20%7C%20GitHub%20Actions-2088FF?style=for-the-badge&logo=githubactions&logoColor=white" />
-<img src="https://img.shields.io/badge/Deps-requests%20only-A78BFA?style=for-the-badge&logo=pypi&logoColor=white" />
-<img src="https://img.shields.io/badge/Self--contained-1%20file-FFC75F?style=for-the-badge&logo=files&logoColor=white" />
 <img src="https://img.shields.io/badge/License-MIT-F472B6?style=for-the-badge" />
 <a href="https://github.com/L0NE-6/WorkBuddy-Daily/releases"><img src="https://img.shields.io/badge/%E2%AC%87%20Download-Releases-2ea44f?style=for-the-badge&logo=github" /></a>
+
+[✨ 速览](#-30-秒速览) · [🚀 青龙部署](#-部署方式一青龙面板三步) · [☁️ Actions](#-部署方式二github-actions零服务器--推荐) · [🔐 登录工具](#-登录工具短信验证码获取-token) · [🔧 环境变量](#-环境变量) · [❓ 常见问题](#-常见问题) · [🚫 使用边界](#usage-policy) · [✦ 星轨](#-星轨-star-trail)
 
 </div>
 
 ---
+
+<a id="usage-policy"></a>
+## 🚫 使用边界与转载声明
+
+> [!IMPORTANT]
+> **官方版本永久免费。** 未经作者书面许可，禁止付费包装、搬运引流、冒充作者，或使用作者身份与二维码制造官方授权假象。违规内容可能被要求下架；作者可暂停更新、归档或删除仓库及相关 Release。
+
+本项目仓库、脚本、部署说明和 Release 下载始终免费公开。未经作者明确书面许可，禁止将本项目包装为付费资源、内部版、独家版、会员权益、收费课程、付费部署或包更新服务；禁止搬运到其他账号、群组、频道、网盘、电商或付费平台进行涨粉、截流、倒卖和引流；禁止删除作者与版权信息后冒充原创；禁止使用作者昵称、头像、二维码和项目名称制造官方授权假象。
+
+> 如需商业合作、品牌授权、联合分发或使用作者名义提供付费服务，请先取得作者明确书面授权。完整规则、收款码防诈骗说明和违规处理方式见 **[NOTICE.md](NOTICE.md)**。
+
+> 官方仓库和 Release 始终免费。第三方以“下载费 / 激活费 / 内部版 / 代部署 / 会员门槛”等名义收费，均与作者无关，请停止付款并保留证据。
+
+> 对上述违规行为，作者有权要求立即停止传播、删除内容并下架相关商品或页面；并可视情况暂停更新、归档或删除本仓库及相关 Release、向平台投诉或采取进一步必要措施。
+
+---
+
+## ✨ 30 秒速览
+
+| 维度 | 说明 |
+| :--- | :--- |
+| **做什么** | 自动完成 WorkBuddy 国内版签到、成长任务、小程序链式任务、互动玩法与奖励回读；国际版独立完成每日活跃链。 |
+| **输入** | 国内版 `WORKBUDDY_REFRESH_TOKEN`，国际版 `WORKBUDDY_INTL_TOKENS`；可选配置推送渠道与任务白/黑名单。 |
+| **输出** | 中文分账号报告、积分前后差值、任务/签到/活跃状态、待办分布和多渠道推送。 |
+| **部署** | 青龙面板、GitHub Actions、Windows / Linux 本地运行。 |
+| **依赖** | Python 3.8+；主流程仅依赖 `requests`。 |
+| **成功判据** | 签到状态、任务进度和领奖结果均回读确认；不以单个 HTTP 200 冒充任务完成。 |
 
 ## ✨ 这是什么
 
@@ -140,9 +173,9 @@ Actions → 左侧选 **🌱 WorkBuddy Daily** → **Run workflow** → 选 `mai
 ### 内置定时（北京时间）
 | 时间 | UTC cron | 说明 |
 | :---: | :---: | :--- |
-| 07:00 | `0 23 * * *` | 日常全流程 |
-| 12:00 | `0 4 * * *` | 日常全流程 |
-| 23:30 | `30 15 * * *` | 夜猫子活动窗口 |
+| 07:17 | `17 23 * * *` | 日常全流程，避开整点高峰 |
+| 12:17 | `17 4 * * *` | 日常全流程，避开整点高峰 |
+| 23:37 | `37 15 * * *` | 夜猫子活动窗口 |
 
 > 需要改时间，编辑 `workbuddy.yml` 里的 `cron`（**注意是 UTC，北京时间 − 8 小时**）。
 >
@@ -167,6 +200,18 @@ Actions → 左侧选 **🌱 WorkBuddy Daily** → **Run workflow** → 选 `mai
   两种方式得到的是**独立仓库**（不是 Fork），令牌才能安全持久化、续期不中断。
 
 - 若继续使用**公开仓库**（含公开 Fork），令牌不会持久化，**每次运行都依赖 `WORKBUDDY_REFRESH_TOKEN` 这个 Secret 提供最新 RT**——需自行保证其不过期（RT 一般 30 天滚动，建议每月更新一次）。
+
+### ⏰ 私有仓库 / Import 后定时不触发（issue #43）
+
+手动 `Run workflow` 成功、但 `schedule` 不跑，按这个顺序排查：
+
+1. **默认分支**：GitHub 的 `schedule` 只在仓库默认分支上生效。Import 后如果默认分支还是 `master`，而 workflow 只在 `main`，定时永远不会触发。
+2. **Actions 开关**：`Settings → Actions → General` 确认允许 Actions；`Actions` 页选中 `🌱 WorkBuddy Daily`，若提示 disabled 点 **Enable workflow**。
+3. **Fork 限制**：Fork 仓库默认禁用定时 workflow，必须在 Actions 页手动启用；私有仓库建议用 Import/手动上传，不要用 Fork。
+4. **60 天无活动**：GitHub 会自动停用长期无活动仓库的 `schedule`；手动运行一次或 push 一个 commit 可重新激活。
+5. **cron 是 UTC**：北京时间要减 8 小时，例如 `17 23 * * *` 是北京时间次日 07:17。
+6. **看 Actions 记录**：如果只有 `workflow_dispatch` 记录、没有 `schedule` 记录，基本就是上面 1/2/3/4 之一，不是脚本问题。
+7. **schedule 是 best-effort**：GitHub 官方不保证准点，整点前后高负载时可能延迟数分钟到数小时，甚至跳过；v3.36 默认已避开整点，但仍不能保证准点。需要精确时间请用 `workflow_dispatch` 或外部调度触发。
 
 ---
 
@@ -488,7 +533,7 @@ python daily_forward.py daily.log --wx
 - **⏰ 智能续期**：距上次刷新 > 10 天或 AT 7 天内过期才刷新，避免无谓轮换。
 - **🔄 API 重试**：网络错误 / 5xx 自动指数退避重试 3 次；`--gap` 可调写动作间隔防频控。
 - **🎛️ 子任务开关**：`WORKBUDDY_TASKS`（白名单）/ `WORKBUDDY_SKIP_TASKS`（黑名单）可自由裁剪要执行的子任务（含玩法），被跳过的任务不会被完成也不会被领奖——适合把积分分摊到后面几个月领。
-- **🔗 稳定设备指纹**：每账号稳定派生 machineId/sessionId/qimei36；国内桌面 UA、版本、commit、releaseDate、CPU/内存与 5.8.3 真机口径对齐。
+- **🔗 稳定设备指纹**：每账号稳定派生 machineId/sessionId/qimei36；国内桌面 UA、版本、commit、releaseDate、CPU/内存与 5.9.3 真机口径对齐。
 - **🔄 续期头对齐**：CN refresh 带当前 AT 的 `Authorization: Bearer ...`、`X-Request-ID`、`X-User-Id`、`X-Domain`；AT/uid 缺失时保持旧的纯 RT 刷新形态，不伪造身份。
 - **💰 积分明细口径**：`credits_report.py` 的 `get-user-resource` 带分页 / 产品码 / 状态 / 到期时间窗，按 `CycleCapacityRemain[Precise]` 与 `CapacityType=4` 区分月度资源；旧 `CapacityRemain` 回包仍可读。
 - **📡 多域上报**：桌面域 + Web 域 + 小程序域三通道事件上报，完整覆盖所有任务类型。
@@ -617,7 +662,7 @@ available for personal users」（2026-10-07 实测口径）。脚本会**自动
 ## 📦 版本与发布
 
 - **每次更新单独发一个 Release**：编号 `v1` → `v2` → `v3` …依次递增，**历史版本保留可下载，不覆盖、不合并**（方便回看与回退）
-- **当前脚本版本**：`v3.27`（Release `v27`）
+- **当前脚本版本**：`v3.36`（Release `v36`）
 - Release 标题括号里是**脚本自身的版本号**（如 `v3（脚本 v3.3）`、`v4（脚本 v3.4）`），与文件头、日志里的版本一致
 - 每个 Release 都带完整包 zip、各脚本单文件与 `SHA256SUMS.txt` 校验文件，按需下载即可
 - 下载页：<https://github.com/L0NE-6/WorkBuddy-Daily/releases>；青龙 / Actions 想固定版本就下对应 Release 的资产，想跟最新就用仓库 `main`
@@ -648,6 +693,8 @@ available for personal users」（2026-10-07 实测口径）。脚本会**自动
 </p>
 <p align="center"><sub>💚 微信支付（左） &nbsp;|&nbsp; 💙 支付宝（右，支持信用卡 / 花呗）</sub></p>
 
+> ⚠️ 收款码仅用于向作者自愿赞赏。任何第三方以代下载、代部署、内部资源或会员群为由收费，均与作者无关，请停止付款并保留证据。
+
 > 💡 **不花钱也能帮上很多忙**：点个 ⭐ Star、提一个带日志的 Issue、发一个 Pull Request、或者把脚本分享给需要的朋友 —— 这些同样是最好的支持。
 
 ---
@@ -663,6 +710,20 @@ available for personal users」（2026-10-07 实测口径）。脚本会**自动
 
 ---
 
+## ✦ 星轨 Star Trail
+
+> 每一次 Star 都是一枚信号灯。这里记录 WorkBuddy Daily 与社区一起走过的轨迹，也提醒我继续把自动化做得更稳、更透明。
+
+<a href="https://star-history.com/#L0NE-6/WorkBuddy-Daily&Date">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=L0NE-6/WorkBuddy-Daily&type=Date&theme=dark" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=L0NE-6/WorkBuddy-Daily&type=Date" />
+    <img alt="WorkBuddy Daily Star Trail" src="https://api.star-history.com/svg?repos=L0NE-6/WorkBuddy-Daily&type=Date" />
+  </picture>
+</a>
+
+---
+
 <div align="center">
-  <sub>🌱 如果这个脚本帮到你，点个 <b>Star</b> 支持一下，或者到 <a href="#-支持与投喂">支持与投喂</a> 请我喝杯咖啡 ✨</sub>
+  <sub>L0NE-6 · DAILY SIGNAL &nbsp;|&nbsp; 点个 <b>Star</b>，让下一轮自动化有迹可循 ✨</sub>
 </div>

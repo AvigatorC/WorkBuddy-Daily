@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-🌱 WorkBuddy Daily - 全能签到脚本 v3.28（呆呆面板定制）
+🌱 WorkBuddy Daily - 全能签到脚本 v3.36（呆呆面板定制）
 ════════════════════════════════════════════════════════════════
 
 📌 这是什么
@@ -157,7 +157,7 @@
    · 礼包补偿：先查 active/claimed/credit_num，再按回执 credit 判定本次到账；本地按活动期防重
    · 企业形态以账号 enterpriseId 为准；token_source 只表示授权流程，不作为跳过任务依据
    · 会话 ID：conversationId 用 UUID v4，request/message ID 用 32 hex 毫秒前缀；不再上报项目缩写前缀
-   · 官方指纹：CN 桌面 UA/版本/commit/releaseDate/cpu/内存对齐 5.8.3，并补 qimei36
+   · 官方指纹：CN 桌面 UA/版本/commit/releaseDate/cpu/内存对齐 5.9.3，并补 qimei36
    · 网页会话收尾：真实对话完成即 stop，失败再 delete；撞 10105 时自动清理同前缀旧会话
    · 凭据失效隔离：AT/RT 过期或格式错只跳过该账号并给出排障提示，不再整轮崩溃
    · 子任务开关：WORKBUDDY_TASKS（白名单）/ WORKBUDDY_SKIP_TASKS（黑名单）——
@@ -208,10 +208,12 @@ CBDOMAIN = "https://www.codebuddy.cn"   # codebuddy 域（小程序埋点 / 技�
 WEB_CONVERSATIONS_PATH = "/console/webchat/conversations"
 WEB_CONVERSATION_ACTIVE_STATUSES = ("working", "creating", "pending")
 WEB_CONVERSATION_PRUNE_KEEP = 8
-WORKBUDDY_UA_CN = "WorkBuddy/5.8.3 WorkBuddy/5.8.3 CLI/2.161.0"
-DESKTOP_VERSION_CN = "5.8.3"
-DESKTOP_COMMIT_CN = "db0e9b51b7fa0b383f41f5b0b83dd442c8557918"
-DESKTOP_RELEASE_CN = 1792029498676
+WORKBUDDY_UA_CN = "WorkBuddy/5.9.3 WorkBuddy/5.9.3 CLI/2.165.0"
+DESKTOP_VERSION_CN = "5.9.3"
+# 5.9.3.42398134-d4692421 官方安装包对应的构建号与 releaseDate；
+# 不要用第三方仓库里抄错的 5.8.x 旧值冒充 5.9.3 指纹。
+DESKTOP_COMMIT_CN = "d46924219e79332f49c37ccebf27292f87001b19"
+DESKTOP_RELEASE_CN = 1793093056315
 UA = WORKBUDDY_UA_CN
 
 # ---------- 任务代码 → 中文名映射 ----------
@@ -544,6 +546,25 @@ def _token_user(tok):
     return str(_jwt_claims(tok).get("preferred_username") or "").strip()
 
 
+def _account_identity(user, at="", rt=""):
+    """返回账号稳定身份：优先 JWT subject，其次显式 user（手机号/备注）。
+
+    只用于启动时合并环境变量账号，不能让轮换后的 RT 参与身份判断——
+    RT 每次刷新都会变化，用它会重复新增账号并覆盖已轮换的令牌。
+    无稳定身份时返回空字符串，调用方必须保留 store 里的现有账号。
+    """
+    for tok in (at, rt):
+        sub = str(_jwt_claims(tok).get("sub") or "").strip()
+        if sub:
+            return "sub:" + sub
+    for tok in (at, rt):
+        name = str(_jwt_claims(tok).get("preferred_username") or "").strip()
+        if name:
+            return "user:" + name
+    user = str(user or "").strip()
+    return "user:" + user if user else ""
+
+
 def _parse_env_tokens(raw):
     """解析环境变量：支持换行或 @ 分隔；每项返回 (手机号, AT, RT)。
 
@@ -662,6 +683,13 @@ def jwt_user(tok):
         return "?"
 
 
+def uid_of(tok):
+    try:
+        return json.loads(base64.urlsafe_b64decode(tok.split(".")[1] + "==")).get("sub", "")
+    except Exception:
+        return ""
+
+
 def refresh_one(rt, at=""):
     """刷新单个 RT，返回 (新 AT, 新 RT) 或 (None, 错误信息)。
 
@@ -763,18 +791,31 @@ def auto_refresh():
             store = json.load(open(REFRESH_STORE, encoding="utf-8")) if os.path.exists(REFRESH_STORE) else {}
         except Exception:
             store = {}
-        existing_rt = {v.get("refresh_token") for v in store.values()}
+        existing_identity = {}
+        for key, ent in store.items():
+            ident = _account_identity(
+                key, ent.get("access_token", ""), ent.get("refresh_token", ""))
+            if ident:
+                existing_identity.setdefault(ident, key)
         added = 0
         for user, at, rt in _parse_env_tokens(env_rt):
             if not (rt or at):
                 continue
-            key = user or (_token_user(at) if at else "env-%d" % (len(store) + 1))
-            if rt and rt in existing_rt:
+            ident = _account_identity(user, at, rt)
+            if not ident:
+                # 没有稳定身份：保留 store 里的现有账号，不用环境变量覆盖
                 continue
-            store[key] = {"refresh_token": rt or store.get(key, {}).get("refresh_token", ""),
-                          "access_token": at or store.get(key, {}).get("access_token", "")}
-            if rt:
-                existing_rt.add(rt)
+            if ident in existing_identity:
+                continue
+            key = user or (_token_user(at) if at else "env-%d" % (len(store) + 1))
+            if key in store:       # 同名但不是同一稳定身份：保留旧账号，另起键名
+                base = key
+                suffix = 2
+                while key in store:
+                    key = "%s-%d" % (base, suffix)
+                    suffix += 1
+            store[key] = {"refresh_token": rt or "", "access_token": at or ""}
+            existing_identity[ident] = key
             added += 1
         if added:
             json.dump(store, open(REFRESH_STORE, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
@@ -1081,13 +1122,6 @@ def is_account_restricted(status_code, payload):
     return int(status_code or 0) == 403 and any(marker in blob for marker in markers)
 
 
-def uid_of(tok):
-    try:
-        return json.loads(base64.urlsafe_b64decode(tok.split(".")[1] + "==")).get("sub", "")
-    except Exception:
-        return ""
-
-
 def nickname_of(tok):
     try:
         return json.loads(base64.urlsafe_b64decode(tok.split(".")[1] + "==")).get("nickname", "") or "用户"
@@ -1131,7 +1165,7 @@ def _expert_spec_for_task(s, code):
     stored = EXPERT_TASK_SPECS.get(code)
     if not stored and not str(code).startswith("expert_use_"):
         return {}
-    row = _growth_task_row(s, code) or {}
+    row = _expert_task_row(s, code) or {}
     title = str(
         row.get("title") or row.get("task_title") or row.get("task_name")
         or TASK_NAME_CN.get(code) or code)
@@ -1148,11 +1182,21 @@ def _expert_spec_for_task(s, code):
     return spec
 
 
+def _expert_task_row(s, code):
+    """专家任务行：先桌面口径，再回落小程序口径。
+
+    成长中心 UI 里能看到、桌面 `/v2` 列表却没下发的专家任务并不少见；
+    只看桌面列表会把「任务存在」误判成「未下发」。
+    """
+    return _growth_task_row(s, code) or _mp_task_row(s, code)
+
+
 def _dynamic_expert_task_codes(s):
     """发现桌面任务列表里的 expert_use_* 族任务，静态四条只是已审核兜底。"""
+    rows = _growth_task_rows(s) + _growth_task_rows(s, MP_HEADER)
     return sorted({
         str(task.get("task_code") or task.get("code") or "").strip()
-        for task in _growth_task_rows(s)
+        for task in rows
         if str(task.get("task_code") or task.get("code") or "").startswith("expert_use_")
     })
 
@@ -1307,7 +1351,12 @@ def _web_conversation_action(s, conversation_id, action):
 
 
 def _web_conversation_prune(s, prefix, keep=WEB_CONVERSATION_PRUNE_KEEP):
-    """撞到 10105 时，停掉同前缀的最旧活跃会话，最多保留 keep 条。"""
+    """撞到 10105 时，停掉最旧的活跃会话，最多保留 keep 条。
+
+    上限是**账号级**的，不是按任务名前缀分组：专家任务每个 code 都有自己的
+    `expert-<slug>` 前缀，只清同前缀会在跨任务累计到 10 条时永远清不掉。
+    `prefix` 保留仅为兼容调用方。
+    """
     try:
         response = s.get(
             BASE + WEB_CONVERSATIONS_PATH,
@@ -1325,8 +1374,6 @@ def _web_conversation_prune(s, prefix, keep=WEB_CONVERSATION_PRUNE_KEEP):
         status = str(row.get("status") or "").lower()
         name = str(row.get("name") or "")
         if status not in WEB_CONVERSATION_ACTIVE_STATUSES:
-            continue
-        if prefix and not name.startswith(prefix + "-"):
             continue
         active.append(row)
     if len(active) < 10:
@@ -1487,7 +1534,7 @@ def mask_phone(s):
     return s
 
 
-def queryCredits(s):
+def queryCredits(s, meta=None):
     """积分查询：剩余积分合计 + 各套餐明细（对齐客户端 App 顶部显示的剩余积分）。
 
     App 顶部"剩余积分"= 所有套餐 CycleRemainCapacity 之和（如 2425.4 = 主套餐1925.4
@@ -1509,6 +1556,8 @@ def queryCredits(s):
             pkg_name = "主套餐" if i == 0 else "加量包%d" % i
             out.append("%s剩余%s(共%s,已用%s)" % (pkg_name,
                        _clean_num(remain_f), _clean_num(total_f), _clean_num(used_f)))
+        if meta is not None:
+            meta["total_remain"] = total_remain
         if not out:
             return "暂无套餐", paid
         return ("剩余积分合计%s（%s）" % (_clean_num(total_remain), "；".join(out))), paid
@@ -3290,16 +3339,49 @@ def t_lighthouse(s, uid, nick, log):
 VALORANT_EXPERT = {"id": "ex_xQHHD1u5Jkua", "name": "无畏契约拼豆专家", "version": "1.2.1"}
 
 
+def _expert_prog(s, code):
+    """专家任务进度：桌面口径优先，桌面未下发时回落小程序口径。"""
+    st, cur, tgt = prog(s, code)
+    if st is not None:
+        return st, cur, tgt
+    return _mp_prog(s, code)
+
+
+def _accept_expert_task(s, code, log):
+    """接受专家任务：桌面口径失败时再试小程序口径。
+
+    专家任务在不同账号上可能只出现在其中一份任务列表里；只按桌面 accept
+    会在 MP-only 账号上一直返回 task not found。
+    """
+    if prog(s, code)[0] is not None:
+        if _accept_with_verify(s, code, log):
+            return True
+    ok, status, message = _mp_accept_res(s, code)
+    ast = _mp_prog(s, code)[0]
+    if ok and ast in ("accepted", "completed", "claimed"):
+        return True
+    log("      ✗ mp accept %s: %s %s" % (
+        code, status or "无返回", (message or "")[:50]))
+    return False
+
+
 def _run_local_expert_task(s, uid, nick, log, task_code, expert, conv_name="expert"):
     """LOCAL 专家任务共用链：真实对话 + 召唤 + actual_use(mode:LOCAL)。"""
     label = expert.get("profession") or expert.get("name") or task_code
-    st, cur, tgt = prog(s, task_code)
+    st, cur, tgt = _expert_prog(s, task_code)
     if st is None:
         log("   %s: 不在当前任务列表，跳过" % label)
         return
     if st in ("completed", "claimed"):
         log("   %s: %s %s/%s" % (label, st, cur, tgt))
         return
+    # 任务列表是运行中动态解锁的：启动时 t_accept_all 扫不到、后来才出现的
+    # 专家任务会停在 not_accepted；不在这里补 accept，真实对话和 actual_use
+    # 都不会被计入任务进度。
+    if st in ("", "not_accepted"):
+        if not _accept_expert_task(s, task_code, log):
+            log("   %s: 接受任务失败，跳过" % label)
+            return
     expert = dict(expert)
     if expert.get("id") and not _EXPERT_ID_RE.fullmatch(str(expert.get("id") or "")):
         log("   %s: 专家 ID 格式无效，跳过" % label)
@@ -3349,6 +3431,9 @@ def _run_local_expert_task(s, uid, nick, log, task_code, expert, conv_name="expe
         conv_id, _txt, mid = webchat2(s, conv_name, prompt, meta)
     except Exception as exc:
         log("   %s: 对话异常 %s" % (label, str(exc)[:50]))
+    if not conv_id or not mid:
+        log("   %s: 真实对话未返回会话/消息 ID（会话=%s 消息=%s），本次不计数"
+            % (label, conv_id or "-", mid or "-"))
     if conv_id and mid:
         summon = [
             {"eventCode": "expert_summon_click", "id": expert["id"], "name": display_name,
@@ -3376,9 +3461,9 @@ def _run_local_expert_task(s, uid, nick, log, task_code, expert, conv_name="expe
         except Exception as exc:
             log("   %s: 桌面链上报失败 %s" % (label, str(exc)[:50]))
         time.sleep(4)
-        status = prog(s, task_code)[0]
+        status = _expert_prog(s, task_code)[0]
         if status in ("completed", "claimed"):
-            st, cur, tgt = prog(s, task_code)
+            st, cur, tgt = _expert_prog(s, task_code)
             log("   %s: %s %s/%s" % (label, st, cur, tgt))
             return
     try:
@@ -3400,7 +3485,7 @@ def _run_local_expert_task(s, uid, nick, log, task_code, expert, conv_name="expe
         time.sleep(3)
     except Exception as exc:
         log("   %s: 失败 %s" % (label, str(exc)[:60]))
-    st, cur, tgt = prog(s, task_code)
+    st, cur, tgt = _expert_prog(s, task_code)
     log("   %s: %s %s/%s" % (label, st, cur, tgt))
 
 
@@ -4073,11 +4158,16 @@ def claim_ready_tasks(s, log):
             can_claim = claimable(task)
             old = merged.get(code)
             if old is None:
-                merged[code] = {"task": task, "mp": mp, "claimable": can_claim}
+                merged[code] = {"task": task, "mp": mp, "desktop": not mp,
+                                "claimable": can_claim}
             elif can_claim and not old["claimable"]:
-                merged[code] = {"task": task, "mp": mp, "claimable": True}
+                merged[code] = {"task": task, "mp": mp,
+                                "desktop": old.get("desktop", False),
+                                "claimable": True}
             elif can_claim and old["claimable"] and mp and not old["mp"]:
-                merged[code] = {"task": task, "mp": True, "claimable": True}
+                merged[code] = {"task": task, "mp": True,
+                                "desktop": old.get("desktop", False),
+                                "claimable": True}
 
     collect()
     collect(MP_HEADER, mp=True)
@@ -4085,8 +4175,11 @@ def claim_ready_tasks(s, log):
     for code, item in merged.items():
         if not item["claimable"]:
             continue
-        use_mp = False if code in DESKTOP_ONLY_TASK_CODES else bool(
-            item["mp"] or code in MP_TASK_CODES)
+        # 专家任务默认走桌面 claim；只有「桌面列表根本没有、只在 MP 列表出现」
+        # 的账号才改用 MP claim。两个列表都有时仍按桌面口径，保持既有行为。
+        use_mp = bool(item["mp"] or code in MP_TASK_CODES)
+        if code in DESKTOP_ONLY_TASK_CODES and item.get("desktop"):
+            use_mp = False
         try:
             ok = _mp_claim(s, code, log) if use_mp else claim(s, code, log)
         except Exception as exc:
@@ -4374,7 +4467,8 @@ def run_account(idx, acc, do_desktop):
         return msgs, {"idx": idx, "note": acc.get("note", ""), "done": 0, "total": 0,
                       "rest": ["凭据失效"], "level": "?", "energy": "?"}
     # 查询
-    credits, paid = queryCredits(s)
+    credit_meta = {}
+    credits, paid = queryCredits(s, credit_meta)
     usage = queryUsage(s)
     prof = pj.get("data", {}) or {}
     energy = (_json_or_empty(s.get(BASE + "/v2/activity/growth/energy", timeout=25,
@@ -4382,6 +4476,7 @@ def run_account(idx, acc, do_desktop):
     streak = ((_json_or_empty(s.get(BASE + "/v2/activity/growth/streak", timeout=25,
                                              verify=False)).get("data") or {}).get("streak") or {})
     summary["credits"] = credits
+    summary["credits_before"] = credit_meta.get("total_remain")
     summary["usage"] = usage
     summary["streak"] = streak.get("days", "?")
     _ck = _checkin_status(s)          # 签到活动口径（与活跃连签分开显示，issue #21）
@@ -4495,6 +4590,9 @@ def run_account(idx, acc, do_desktop):
     _run("小程序GLM5.2", ["Sequential_Tasks_5"], lambda: t_sequential_tasks_5(s, uid, nick, log))
     _run("小程序对话10次", ["Sequential_Tasks_6"], lambda: t_sequential_tasks_6(s, uid, nick, log))
     _run("PC灵感功能", ["Sequential_Tasks_7"], lambda: t_sequential_tasks_7(s, uid, nick, log))
+    # 盲盒/旅行/抽奖都消耗能量；先把已达标任务的奖励结算掉，
+    # 否则今天任务发的能量要等到下一轮才可见（盲盒会误报能量不足）。
+    claim_ready_tasks(s, log)
     _run("徽章", ["badges"], lambda: t_badges(s, uid, nick, log))
     _run("盲盒", ["blindbox"], lambda: t_blindbox(s, uid, nick, log))
     _run("Buddy 信息", ["buddy_info"], lambda: t_buddy_info(s, uid, nick, log))
@@ -4515,6 +4613,14 @@ def run_account(idx, acc, do_desktop):
     # 领奖：按进度补领，不依赖 accept_status 的瞬时状态
     log("  🎁 ── 领奖 ──")
     claim_ready_tasks(s, log)
+    # issue #44：推送里给出本轮操作前/后的积分与差值
+    credit_after = {}
+    queryCredits(s, credit_after)
+    summary["credits_after"] = credit_after.get("total_remain")
+    before = summary.get("credits_before")
+    after = summary.get("credits_after")
+    if isinstance(before, (int, float)) and isinstance(after, (int, float)):
+        summary["credits_delta"] = float(after) - float(before)
     # 终态
     st_all = (_json_or_empty(s.get(BASE + "/v2/activity/growth/tasks", timeout=25,
                                       verify=False)).get("data") or {}).get("tasks", [])
@@ -4559,7 +4665,15 @@ def build_summary(summaries):
         rest_cn = [task_cn(r) for r in rest]
 
         lines.append("👤 账号%d  %s" % (idx, mask_phone(note)))
-        lines.append("   💰 %s" % (credits if credits else "暂无数据"))
+        before = sm.get("credits_before")
+        after = sm.get("credits_after")
+        if isinstance(before, (int, float)) and isinstance(after, (int, float)):
+            delta = float(after) - float(before)
+            sign = "+" if delta > 0 else ""
+            lines.append("   💰 积分: %s → %s（本轮 %s%s）" % (
+                _clean_num(before), _clean_num(after), sign, _clean_num(delta)))
+        else:
+            lines.append("   💰 %s" % (credits if credits else "暂无数据"))
         lines.append("   📊 %s" % (usage if usage else "暂无数据"))
         lines.append("   🌱 等级%s | 签到连签%s天 | 活跃连签%s天 | 能量%s"
                      % (level, sm.get("checkin_streak", "?"), streak, energy))

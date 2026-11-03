@@ -1,5 +1,12 @@
 # 更新日志
 
+## 呆呆面板定制（基于上游 v3.36，2026-11-03）
+
+- 合并上游 v3.29 ~ v3.36：v3.29 续期 `uid_of` NameError 与 RT 合并修复；v3.30/v3.31 官方 5.9.3 桌面指纹；v3.32 动态专家任务先 accept；v3.33 专家任务回落小程序口径 + MP-only 领奖；v3.34 盲盒前先结算任务奖励；v3.35 积分前后差值；v3.36 Actions 定时避整点。
+- 面板定制保持不变（`patch_panel.py` 14 个补丁原样重打）：`WORKBUDDY_NOTIFY` 默认 `fail`；企业号 / 白名单跳过签到不算异常；失败用 `❌ WorkBuddy 签到失败` 标题；`main()` 返回 0/1；`sys.exit(main())`。
+- 守卫继续由上游承载，`verify_guards()` 逐个断言 6 个锚点存在。
+- 测试：上游 `tests/test_workbuddy_core.py` 64 项 + `tests/test_credits_report.py` + `tests/test_panel_guards.py` 全部通过。
+
 ## 呆呆面板定制（基于上游 v3.28，2026-10-30）
 
 - 合并上游 v3.26 ~ v3.28：带入 issue #39 的「未下发任务守卫」（`create_canvas` / `playbook_prompt` / `Model_chat_GLM5.2` / `Buddy_App_QQ` / `RichMeow_Chat` / `skill_1`）、v3.27 的 CN 续期头与积分查询口径、v3.28 的 CN 签发域与 Actions 自动分流。
@@ -8,6 +15,61 @@
 - `patch_panel.py` 重写为「不碰守卫，只校验」：末尾 `verify_guards()` 断言 6 处守卫仍在，上游若再次删守卫会直接报错，而不是静默部署。
 - `check_patches.py` 重写为静态校验（23 项）；新增 `tests/test_panel_guards.py`（退出码语义 + 守卫不变量），不改动上游测试文件，避免同步冲突。
 - 测试：上游 `tests/test_workbuddy_core.py` 43 项 + `tests/test_credits_report.py` 7 项 + `tests/test_panel_guards.py` 8 项全部通过。
+
+## v3.36（2026-11-02）
+
+- 调整 GitHub Actions 默认定时：从整点 `07:00 / 12:00 / 23:30` 改为 `07:17 / 12:17 / 23:37`（北京时间），避开整点高峰。
+- README 补充 GitHub `schedule` 是 best-effort：可能延迟数分钟到数小时甚至跳过，不能保证准点；需要精确时间请用 `workflow_dispatch` 或外部调度。
+- 回应 issue #43 后续反馈；不改账号、任务与令牌逻辑。
+
+## v3.35（2026-10-30）
+
+- 推送摘要增加本轮操作前 / 操作后的积分与差值（issue #44）：账号报告显示 `积分: 前 → 后（本轮 +N）`，不再只有操作前余额。
+- `queryCredits` 增加可选 `meta` 输出，保留原有文本返回值；任务结束、最终领奖后再查询一次并计算差值。
+- README 补充私有仓库 / Import 后 `schedule` 不触发的排查清单（issue #43）：默认分支、Actions 启用、Fork 限制、60 天无活动、UTC cron。
+- 新增推送摘要积分差值回归，测试总数 64 项。
+
+## v3.34（2026-10-30）
+
+- 修复盲盒“能量不足”的时序问题：`t_blindbox` 原来在所有任务领奖之前执行，今天任务刚发的 +5 能量还没到账，盲盒只能看到旧余额。
+- 任务执行完后、徽章/盲盒/旅行/抽奖之前先调用一次 `claim_ready_tasks`，把已达标奖励结算掉；末尾保留原领奖调用兜底。
+- 真实账号验证：6 个账号的 4 类专家任务全部 `claimed 1/1`；盲盒按当前 `affordable` 开完，能量均降到 10 以下。
+
+## v3.33（2026-10-30）
+
+- 修复「UI 任务中心能看到、脚本却提示不在当前任务列表」：专家任务查询原来只读桌面 `/v2/activity/growth/tasks`；现在 `_expert_task_row` / `_expert_prog` 在桌面未命中时回落小程序口径（`X-Client-Platform: miniprogram`）。
+- `_dynamic_expert_task_codes` 同时合并桌面与 MP 的 `expert_use_*`，不再只依赖桌面列表。
+- `_accept_expert_task` 先按桌面口径 accept，失败再走 MP `_mp_accept_res`；MP-only 账号不再卡在 `task not found`。
+- `claim_ready_tasks` 区分「桌面+MP 都有」与「只在 MP 出现」：前者仍走桌面 claim，后者改用 MP claim，避免专家任务完成后无法领奖。
+- 新增 2 项回归（MP 回落、MP-only 领奖），测试总数 63 项。
+
+## v3.32（2026-10-30）
+
+- 修复动态解锁的专家任务一直停在 `not_accepted`：`_run_local_expert_task` 原来只读 `prog()`，不补 accept；任务在 `t_accept_all` 之后才出现时，真实对话和 `expert_actual_use` 都不会计入进度，日志只剩 `not_accepted None/None`。
+- 进入专家任务时若状态为 `""` / `not_accepted`，先走 `_accept_with_verify`；登记失败直接跳过，不再白跑对话。
+- 真实对话没有返回 `conversationId` 或服务端消息 ID 时输出明确诊断，不再静默 fallback。
+- `_web_conversation_prune` 改为按账号级活跃上限清理；原实现只清同 `expert-<slug>` 前缀，跨专家累计到 10 条时永远清不掉。
+- 新增 2 项回归（专家任务先 accept、跨前缀清理），测试总数 61 项。
+
+## v3.31（2026-10-30）
+
+- 修正 v3.30 的 5.9.3 构建指纹：`commit` 改为官方安装包 `5.9.3.42398134-d4692421` 的 `d46924219e79332f49c37ccebf27292f87001b19`，`releaseDate` 改为 `1793093056315`。
+- v3.30 使用的 `c4125338… / 1789632000000` 来自第三方实现，时间早于 5.8.3，不能代表 5.9.3；继续沿用会让版本号与安装清单自相矛盾。
+- UA、`DESKTOP_VERSION_CN`、事件指纹 `ideVersion` / `extVersion` 保持 5.9.3；59 项测试全部通过。
+
+## v3.30（2026-10-30）
+
+- 对齐 WorkBuddy 官方客户端 5.9.3（国内版）：桌面 UA 更新为 `WorkBuddy/5.9.3 WorkBuddy/5.9.3 CLI/2.165.0`，`DESKTOP_VERSION_CN` / 事件指纹 `ideVersion` 与 `extVersion` 同步 5.9.3。
+- 桌面事件指纹的 `releaseDate` / `commit` 曾更新为第三方实现的取值；v3.31 已按官方安装包元数据修正。
+- 仅调整国内版桌面指纹；国际版 5.9.3 的聊天头族仍按 pilot 处理，待真实账号抓包验证后再动。
+- 59 项测试全部通过。
+
+## v3.29（2026-10-30）
+
+- 修复 Issue #42（1）：`ACCOUNTS = load_accounts()` 在 `uid_of()` 定义前执行；v3.27 给 `refresh_one` 增加 `X-User-Id` 后，首次自动续期会触发 `NameError: name 'uid_of' is not defined`，请求根本发不出去。现将 `uid_of` 定义提前到 `refresh_one` 之前，续期恢复发送并携带 `X-User-Id`。
+- 修复 Issue #42（2）：`auto_refresh` 合并 `WORKBUDDY_REFRESH_TOKEN` 时不再用会轮换的 RT 去重，改为按 JWT `sub`（无 `sub` 时用显式 user/手机号）稳定身份合并；已存在账号不会被环境变量里的旧 RT 覆盖，无稳定身份时保留 store 现有账号。
+- v3.28 未改这条路径：v27→v28 的脚本差异仅为 `_token_sanity` 接受 `copilot.tencent.com` 签发域及版本号；`uid_of` 调用由 v3.27 的续期头改动引入。
+- 新增模块导入续期、重复运行不覆盖轮换 RT、JWT subject 合并、无稳定身份保留账号 4 项回归，测试总数 59 项。
 
 ## v3.28（2026-10-30）
 
